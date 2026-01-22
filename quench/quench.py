@@ -125,9 +125,11 @@ class Quench:
         self.benchmark_metadata = None
         self._base_url = _AUTH_STATE.get('base_url', 'https://api.quench.io')
     
-    @_require_auth
     def load_benchmark(self, benchmark_name: str):
         """Load a benchmark from remote storage
+        
+        Public benchmarks can be loaded without authentication.
+        Private benchmarks require authentication via login().
         
         Args:
             benchmark_name: Name of the benchmark to load
@@ -136,17 +138,28 @@ class Quench:
             self (for method chaining)
             
         Raises:
-            AuthenticationError: If not authenticated
+            AuthenticationError: If benchmark is private and user not authenticated
             BenchmarkNotFoundError: If benchmark doesn't exist
             
         Example:
-            >>> quench = Quench().load_benchmark('math_eval_v1')
-            ✓ Loaded benchmark 'math_eval_v1' with 3 model(s)
+            >>> # Load public benchmark (no auth required)
+            >>> quench = Quench().load_benchmark('public_math_eval')
+            ✓ Loaded public benchmark 'public_math_eval' with 3 model(s)
+            
+            >>> # Load private benchmark (auth required)
+            >>> login(api_key="sk_abc123...")
+            >>> quench = Quench().load_benchmark('my_private_benchmark')
+            ✓ Loaded benchmark 'my_private_benchmark' with 2 model(s)
         """
         try:
+            # Prepare headers - include auth token if available
+            headers = {}
+            if _AUTH_STATE['authenticated']:
+                headers['Authorization'] = f"Bearer {_AUTH_STATE['api_key']}"
+            
             response = requests.get(
                 f"{self._base_url}/benchmarks/{benchmark_name}",
-                headers={'Authorization': f"Bearer {_AUTH_STATE['api_key']}"}
+                headers=headers
             )
             response.raise_for_status()
             
@@ -155,8 +168,11 @@ class Quench:
             self.benchmark_data = data.get('benchmark_data', {})
             self.benchmark_metadata = data.get('metadata', {})
             
+            is_public = self.benchmark_metadata.get('is_public', False)
             num_models = len([k for k in self.benchmark_data.keys() if k != 'metadata'])
-            print(f"✓ Loaded benchmark '{benchmark_name}' with {num_models} model(s)")
+            
+            visibility = "public " if is_public else ""
+            print(f"✓ Loaded {visibility}benchmark '{benchmark_name}' with {num_models} model(s)")
             
             return self
             
@@ -164,6 +180,11 @@ class Quench:
             if e.response.status_code == 404:
                 raise BenchmarkNotFoundError(
                     f"Benchmark '{benchmark_name}' not found"
+                )
+            elif e.response.status_code == 401 or e.response.status_code == 403:
+                raise AuthenticationError(
+                    f"Benchmark '{benchmark_name}' is private. "
+                    "Please call login(api_key) first."
                 )
             raise
     
@@ -351,7 +372,6 @@ class Quench:
         
         return self
     
-    @_require_auth
     def predict(
         self, 
         response_json: Optional[Dict] = None, 
@@ -362,10 +382,13 @@ class Quench:
     ):
         """Evaluate model responses and compute scores
         
+        Public benchmarks can be evaluated without authentication.
+        Adding models to benchmarks (add_model=True) requires authentication.
+        
         Args:
             response_json: Optional new responses to evaluate (otherwise uses loaded benchmark)
             metrics: List of metrics to compute (e.g., ['accuracy', 'consistency', 'coherence'])
-            add_model: If True, add the evaluated model to the benchmark (default: False)
+            add_model: If True, add the evaluated model to the benchmark (default: False, requires auth)
             model_name: Required if add_model=True and response_json is subtask-level data
             **kwargs: Additional evaluation parameters
             
@@ -373,20 +396,28 @@ class Quench:
             Dict with evaluation results containing model scores, subtask scores, etc.
             
         Raises:
-            AuthenticationError: If not authenticated
+            AuthenticationError: If add_model=True but not authenticated
             ValueError: If add_model=True but model already exists, or no data to evaluate
             
         Example:
-            >>> # Evaluate loaded benchmark
-            >>> results = quench.predict(metrics=['accuracy', 'consistency'])
+            >>> # Evaluate public benchmark (no auth required)
+            >>> quench = Quench().load_benchmark('public_math_eval')
+            >>> results = quench.predict(metrics=['accuracy'])
             ✓ Evaluation complete
             
-            >>> # Evaluate new model and add it to benchmark
-            >>> new_responses = {...}
+            >>> # Evaluate and add to benchmark (auth required)
+            >>> login(api_key="sk_abc123...")
             >>> results = quench.predict(new_responses, add_model=True, model_name='gpt-4o')
             ✓ Evaluation complete
             ✓ Added model 'gpt-4o' to benchmark 'my_benchmark'
         """
+        # Check authentication requirement
+        if add_model and not _AUTH_STATE['authenticated']:
+            raise AuthenticationError(
+                "Adding models to benchmarks requires authentication. "
+                "Please call login(api_key) first."
+            )
+        
         # Use provided data or fall back to loaded benchmark
         data = response_json if response_json else self.benchmark_data
         
@@ -413,6 +444,11 @@ class Quench:
                     f"Use add_model=False to evaluate without adding, or remove_model() first."
                 )
         
+        # Prepare headers - include auth token if available
+        headers = {}
+        if _AUTH_STATE['authenticated']:
+            headers['Authorization'] = f"Bearer {_AUTH_STATE['api_key']}"
+        
         # Send evaluation request to remote API
         payload = {
             'benchmark_data': data,
@@ -422,7 +458,7 @@ class Quench:
         
         response = requests.post(
             f"{self._base_url}/evaluate",
-            headers={'Authorization': f"Bearer {_AUTH_STATE['api_key']}"},
+            headers=headers,
             json=payload
         )
         response.raise_for_status()
