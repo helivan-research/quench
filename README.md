@@ -1,6 +1,6 @@
 # Quench
 
-Quench is an evaluation framework for generative models that enables efficient benchmarking of model responses against a standardized set of queries.
+Quench (**Qu**ery **E**fficient B**ench**marking) is an evaluation framework for generative models that enables efficient benchmarking of model responses against a standardized set of queries.
 
 ## Installation
 
@@ -217,4 +217,4 @@ MIT License - see LICENSE file for details
 ## Support
 
 For issues, questions, or contributions, please visit:
-https://github.com/yourusername/quench/issues
+https://github.com/helivan-research/quench/issues
