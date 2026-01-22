@@ -1,6 +1,6 @@
 # Quench
 
-Quench (**Qu**ery **E**fficient B**ench**marking) is an evaluation framework for generative models that enables efficient benchmarking of model responses against a standardized set of queries.
+Quench (**Qu**ery **E**fficient B**ench**marking) is an evaluation framework for generative models that enables query-efficient benchmark score predictions via model responses to a standardized set of queries.
 
 ## Installation
 
