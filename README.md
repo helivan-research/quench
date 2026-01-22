@@ -11,7 +11,7 @@ pip install quench
 Or install from source:
 
 ```bash
-git clone https://github.com/yourusername/quench.git
+git clone https://github.com/helivan-research/quench.git
 cd quench
 pip install -e .
 ```
