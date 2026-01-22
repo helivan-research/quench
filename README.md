@@ -18,14 +18,35 @@ pip install -e .
 
 ## Quick Start
 
+### Working with Public Benchmarks (No Authentication Required)
+
+```python
+from quench import Quench
+
+# Load and evaluate a public benchmark without logging in
+quench = Quench().load_benchmark('public_math_eval')
+
+# List available models
+models = quench.list_models()
+print(models)  # ['gpt4', 'claude', 'gemini']
+
+# Get queries
+queries = quench.get_query_dictionary()
+
+# Evaluate the benchmark
+results = quench.predict(metrics=['accuracy', 'consistency'])
+```
+
+### Working with Private Benchmarks (Authentication Required)
+
 ```python
 from quench import login, Quench
 
 # 1. Authenticate
 login(api_key="your_api_key_here")
 
-# 2. Load an existing benchmark
-quench = Quench().load_benchmark('math_eval_v1')
+# 2. Load an existing private benchmark
+quench = Quench().load_benchmark('my_private_benchmark')
 
 # 3. Add a new model's responses
 new_model_data = {
@@ -58,9 +79,35 @@ results = quench.predict(new_model_data, add_model=True, model_name='claude-opus
 
 ## Core Concepts
 
+### Public vs Private Benchmarks
+
+Quench supports both public and private benchmarks:
+
+- **Public Benchmarks**: Can be loaded and evaluated by anyone without authentication. These are typically community-maintained or official benchmarks for standardized evaluation.
+
+- **Private Benchmarks**: Require authentication to access. These are user-created benchmarks that may contain proprietary data or custom evaluation criteria.
+
+```python
+from quench import Quench, login
+
+# Load public benchmark (no auth needed)
+public_quench = Quench().load_benchmark('public_gsm8k')
+results = public_quench.predict()
+
+# Load private benchmark (auth required)
+login(api_key="your_api_key")
+private_quench = Quench().load_benchmark('my_company_benchmark')
+```
+
 ### Authentication
 
-All operations require authentication via an API key:
+Authentication is required for:
+- Loading private benchmarks
+- Creating new benchmarks
+- Adding models to benchmarks
+- Removing models from benchmarks
+
+Evaluation of public benchmarks does not require authentication.
 
 ```python
 from quench import login, logout
@@ -179,11 +226,11 @@ results = quench.predict(
 
 #### Methods
 
-- `load_benchmark(benchmark_name)` - Load a benchmark from remote storage
-- `create_benchmark(response_json, benchmark_name, **kwargs)` - Create a new benchmark
-- `add_model(response_json, model_name)` - Add a model to the benchmark
-- `remove_model(model_name)` - Remove a model from the benchmark
-- `predict(response_json, metrics, add_model, model_name, **kwargs)` - Evaluate models
+- `load_benchmark(benchmark_name)` - Load a benchmark from remote storage (public: no auth, private: auth required)
+- `create_benchmark(response_json, benchmark_name, **kwargs)` - Create a new benchmark (auth required)
+- `add_model(response_json, model_name)` - Add a model to the benchmark (auth required)
+- `remove_model(model_name)` - Remove a model from the benchmark (auth required)
+- `predict(response_json, metrics, add_model, model_name, **kwargs)` - Evaluate models (public benchmarks: no auth, add_model=True: auth required)
 - `list_models()` - Get list of models in benchmark
 - `get_query_dictionary(subtask)` - Get mapping of query IDs to questions
 - `get_model_metadata(model_name)` - Get metadata for a specific model
@@ -213,7 +260,6 @@ mypy quench/
 ## License
 
 MIT License - see LICENSE file for details
-
 ## Support
 
 For issues, questions, or contributions, please visit:
