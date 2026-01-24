@@ -23,6 +23,7 @@ class BenchmarkNotFoundError(Exception):
 # Global authentication state
 _AUTH_STATE = {
     'api_key': None,
+    'token': None,
     'user_id': None,
     'authenticated': False,
     'base_url': None
@@ -53,13 +54,14 @@ def login(api_key: str, base_url: str = "https://api.quench.io") -> bool:
             json={'api_key': api_key}
         )
         response.raise_for_status()
-        
+
         data = response.json()
         _AUTH_STATE['api_key'] = api_key
+        _AUTH_STATE['token'] = data.get('token')
         _AUTH_STATE['user_id'] = data.get('user_id')
         _AUTH_STATE['authenticated'] = True
         _AUTH_STATE['base_url'] = base_url
-        
+
         print(f"✓ Authenticated as user {_AUTH_STATE['user_id']}")
         return True
         
@@ -71,7 +73,7 @@ def login(api_key: str, base_url: str = "https://api.quench.io") -> bool:
 
 def logout():
     """Clear authentication state
-    
+
     Example:
         >>> from quench import logout
         >>> logout()
@@ -80,6 +82,7 @@ def logout():
     global _AUTH_STATE
     _AUTH_STATE = {
         'api_key': None,
+        'token': None,
         'user_id': None,
         'authenticated': False,
         'base_url': None
@@ -117,12 +120,13 @@ class Quench:
     
     def __init__(self):
         """Initialize Quench evaluator
-        
+
         Note: Authentication must be done via login() before using this class
         """
         self.benchmark_name = None
         self.benchmark_data = None
         self.benchmark_metadata = None
+        self.benchmark_embeddings = None  # Pre-computed embeddings for efficiency
         self._base_url = _AUTH_STATE.get('base_url', 'https://api.quench.io')
     
     def load_benchmark(self, benchmark_name: str):
@@ -155,7 +159,7 @@ class Quench:
             # Prepare headers - include auth token if available
             headers = {}
             if _AUTH_STATE['authenticated']:
-                headers['Authorization'] = f"Bearer {_AUTH_STATE['api_key']}"
+                headers['Authorization'] = f"Bearer {_AUTH_STATE['token']}"
             
             response = requests.get(
                 f"{self._base_url}/benchmarks/{benchmark_name}",
@@ -167,6 +171,7 @@ class Quench:
             self.benchmark_name = benchmark_name
             self.benchmark_data = data.get('benchmark_data', {})
             self.benchmark_metadata = data.get('metadata', {})
+            self.benchmark_embeddings = data.get('embeddings', {})  # Reuse stored embeddings
             
             is_public = self.benchmark_metadata.get('is_public', False)
             num_models = len([k for k in self.benchmark_data.keys() if k != 'metadata'])
@@ -245,10 +250,10 @@ class Quench:
             'benchmark_data': response_json,
             'metadata': metadata
         }
-        
+
         response = requests.post(
             f"{self._base_url}/benchmarks",
-            headers={'Authorization': f"Bearer {_AUTH_STATE['api_key']}"},
+            headers={'Authorization': f"Bearer {_AUTH_STATE['token']}"},
             json=payload
         )
         response.raise_for_status()
@@ -325,7 +330,7 @@ class Quench:
         # Sync to remote
         response = requests.patch(
             f"{self._base_url}/benchmarks/{self.benchmark_name}/models/{final_model_name}",
-            headers={'Authorization': f"Bearer {_AUTH_STATE['api_key']}"},
+            headers={'Authorization': f"Bearer {_AUTH_STATE['token']}"},
             json={'model_data': model_data}
         )
         response.raise_for_status()
@@ -364,7 +369,7 @@ class Quench:
         # Sync to remote
         response = requests.delete(
             f"{self._base_url}/benchmarks/{self.benchmark_name}/models/{model_name}",
-            headers={'Authorization': f"Bearer {_AUTH_STATE['api_key']}"}
+            headers={'Authorization': f"Bearer {_AUTH_STATE['token']}"}
         )
         response.raise_for_status()
         
@@ -372,104 +377,90 @@ class Quench:
         
         return self
     
-    def predict(
-        self, 
-        response_json: Optional[Dict] = None, 
-        metrics: Optional[List[str]] = None,
-        add_model: bool = False,
-        model_name: Optional[str] = None,
-        **kwargs
-    ):
-        """Evaluate model responses and compute scores
-        
-        Public benchmarks can be evaluated without authentication.
-        Adding models to benchmarks (add_model=True) requires authentication.
-        
+    def predict(self, response_json: Dict):
+        """Predict the overall benchmark score for a partially-evaluated model
+
+        Given a new model that has only responded to a subset of the benchmark
+        queries, predict what its overall benchmark score would be by comparing
+        its response embeddings to cached models using MDS and regression.
+
         Args:
-            response_json: Optional new responses to evaluate (otherwise uses loaded benchmark)
-            metrics: List of metrics to compute (e.g., ['accuracy', 'consistency', 'coherence'])
-            add_model: If True, add the evaluated model to the benchmark (default: False, requires auth)
-            model_name: Required if add_model=True and response_json is subtask-level data
-            **kwargs: Additional evaluation parameters
-            
+            response_json: New model responses. Can contain responses to only
+                          a subset of subtasks/queries. Format:
+                          {
+                              'model_name': {
+                                  'subtask': {
+                                      'query_id': {
+                                          'question': '...',
+                                          'response': ['...'],
+                                          ...
+                                      }
+                                  }
+                              }
+                          }
+
         Returns:
-            Dict with evaluation results containing model scores, subtask scores, etc.
-            
+            Dict with prediction results:
+                - predicted_score: {model_name: score} - the predicted overall score
+                - confidence_interval: {model_name: [lower, upper]} - 95% CI
+                - similar_models: Most similar cached models by embedding distance
+                - cached_model_scores: Known scores of cached models
+                - overlap_info: Query overlap statistics (coverage)
+                - mds_coordinates: Low-dim model representations
+
         Raises:
-            AuthenticationError: If add_model=True but not authenticated
-            ValueError: If add_model=True but model already exists, or no data to evaluate
-            
+            ValueError: If no benchmark is loaded or response_json is None
+
         Example:
-            >>> # Evaluate public benchmark (no auth required)
-            >>> quench = Quench().load_benchmark('public_math_eval')
-            >>> results = quench.predict(metrics=['accuracy'])
-            ✓ Evaluation complete
-            
-            >>> # Evaluate and add to benchmark (auth required)
-            >>> login(api_key="sk_abc123...")
-            >>> results = quench.predict(new_responses, add_model=True, model_name='gpt-4o')
-            ✓ Evaluation complete
-            ✓ Added model 'gpt-4o' to benchmark 'my_benchmark'
+            >>> # Load benchmark with cached model results
+            >>> quench = Quench().load_benchmark('math_eval')
+            >>> print(quench.list_models())  # ['gpt4', 'claude', 'gemini']
+
+            >>> # Predict score for new model with partial responses
+            >>> partial_responses = {
+            ...     'my_model': {
+            ...         'algebra': {  # Only answered algebra subtask
+            ...             'q1': {'question': '2+2?', 'response': ['4'], ...},
+            ...         }
+            ...         # Note: No 'geometry' subtask - this is partial
+            ...     }
+            ... }
+            >>> results = quench.predict(partial_responses)
+            >>> print(results['predicted_score'])
+            {'my_model': 0.87}
+            >>> print(results['confidence_interval'])
+            {'my_model': [0.82, 0.92]}
         """
-        # Check authentication requirement
-        if add_model and not _AUTH_STATE['authenticated']:
-            raise AuthenticationError(
-                "Adding models to benchmarks requires authentication. "
-                "Please call login(api_key) first."
+        if self.benchmark_data is None:
+            raise ValueError(
+                "No benchmark loaded. Call load_benchmark() first."
             )
-        
-        # Use provided data or fall back to loaded benchmark
-        data = response_json if response_json else self.benchmark_data
-        
-        if data is None:
-            raise ValueError("No data to evaluate. Provide response_json or load a benchmark.")
-        
-        # If adding model, validate it doesn't already exist
-        if add_model and response_json:
-            # Determine the model name from response_json
-            if model_name and model_name not in response_json:
-                eval_model_name = model_name
-            else:
-                model_keys = [k for k in response_json.keys() if k != 'metadata']
-                if len(model_keys) != 1:
-                    raise ValueError(
-                        "When add_model=True, response_json must contain exactly one model "
-                        "(or use model_name parameter)"
-                    )
-                eval_model_name = model_keys[0]
-            
-            if self.benchmark_data and eval_model_name in self.benchmark_data:
-                raise ValueError(
-                    f"Model '{eval_model_name}' already exists in benchmark. "
-                    f"Use add_model=False to evaluate without adding, or remove_model() first."
-                )
-        
+
+        if response_json is None:
+            raise ValueError("response_json is required for prediction.")
+
         # Prepare headers - include auth token if available
         headers = {}
         if _AUTH_STATE['authenticated']:
-            headers['Authorization'] = f"Bearer {_AUTH_STATE['api_key']}"
-        
-        # Send evaluation request to remote API
+            headers['Authorization'] = f"Bearer {_AUTH_STATE['token']}"
+
+        # Build payload for prediction
         payload = {
-            'benchmark_data': data,
-            'metrics': metrics or ['accuracy', 'consistency'],
-            'parameters': kwargs
+            'benchmark_data': self.benchmark_data,  # Cached benchmark with scores
+            'new_model_data': response_json,  # New model to predict (partial)
+            'benchmark_embeddings': self.benchmark_embeddings  # Reuse stored embeddings
         }
-        
+
         response = requests.post(
-            f"{self._base_url}/evaluate",
+            f"{self._base_url}/evaluate/predict",
             headers=headers,
             json=payload
         )
         response.raise_for_status()
-        
+
         results = response.json()
-        
-        # If add_model flag is True, add the model to benchmark
-        if add_model and response_json:
-            self.add_model(response_json, model_name=model_name)
-        
-        print(f"✓ Evaluation complete")
+
+        print(f"✓ Prediction complete")
         return results
     
     def list_models(self) -> List[str]:
@@ -609,12 +600,12 @@ class Quench:
         """Validate a single model's data structure"""
         if not isinstance(model_data, dict):
             raise ValueError(f"Model '{model_name}' data must be dict")
-        
+
         # Check subtask level
         for subtask_name, subtask_data in model_data.items():
-            if subtask_name == 'metadata':
+            if subtask_name in ['metadata', 'score']:
                 continue
-            
+
             if not isinstance(subtask_data, dict):
                 raise ValueError(
                     f"Subtask '{subtask_name}' in model '{model_name}' must be dict"
@@ -624,21 +615,13 @@ class Quench:
             for query_id, query_data in subtask_data.items():
                 if query_id in ['query_score', 'score', 'metadata']:
                     continue
-                
-                required_fields = ['question', 'response', 'reasoning', 
-                                 'response_score', 'score']
-                for field in required_fields:
-                    if field not in query_data:
-                        raise ValueError(
-                            f"Missing '{field}' in {model_name}/"
-                            f"{subtask_name}/{query_id}"
-                        )
-                
-                # Validate list fields have same length
-                r = len(query_data['response'])
-                if (len(query_data['reasoning']) != r or 
-                    len(query_data['response_score']) != r):
+
+                if not isinstance(query_data, dict):
+                    continue
+
+                # Only 'response' is strictly required
+                if 'response' not in query_data:
                     raise ValueError(
-                        f"Mismatched array lengths in {model_name}/"
+                        f"Missing 'response' in {model_name}/"
                         f"{subtask_name}/{query_id}"
                     )
