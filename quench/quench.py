@@ -30,12 +30,12 @@ _AUTH_STATE = {
 }
 
 
-def login(api_key: str, base_url: str = "https://api.quench.io") -> bool:
+def login(api_key: str, base_url: str = "https://quench.helivan.io/api") -> bool:
     """Authenticate user with API key
     
     Args:
         api_key: User's API key
-        base_url: Base URL for Quench API (default: https://api.quench.io)
+        base_url: Base URL for Quench API (default: https://quench.helivan.io/api)
         
     Returns:
         bool: True if authentication successful, False otherwise
@@ -127,7 +127,7 @@ class Quench:
         self.benchmark_data = None
         self.benchmark_metadata = None
         self.benchmark_embeddings = None  # Pre-computed embeddings for efficiency
-        self._base_url = _AUTH_STATE.get('base_url', 'https://api.quench.io')
+        self._base_url = _AUTH_STATE.get('base_url', 'https://quench.helivan.io/api')
     
     def load_benchmark(self, benchmark_name: str):
         """Load a benchmark from remote storage
