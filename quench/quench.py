@@ -462,7 +462,105 @@ class Quench:
 
         print(f"✓ Prediction complete")
         return results
-    
+
+    def get_optimal_queries(self, budget: int = 10) -> Dict:
+        """Get the most informative queries for predicting benchmark scores
+
+        Selects queries using a combination of:
+        - Correlation: How well query scores correlate with overall model scores
+        - Variance: How much the query discriminates between models
+        - Diversity: Coverage across different query types
+
+        Args:
+            budget: Number of queries to select (default 10, max 100)
+
+        Returns:
+            Dict with:
+                - queries: List of optimal queries with importance scores
+                - total_queries: Total queries in benchmark
+                - estimated_error: Estimated prediction error with this budget
+                - model_count: Number of models used for analysis
+
+        Raises:
+            ValueError: If no benchmark is loaded
+
+        Example:
+            >>> quench = Quench().load_benchmark('math_eval')
+            >>> optimal = quench.get_optimal_queries(budget=15)
+            >>> print(optimal['queries'][:3])
+            [{'subtask': 'algebra', 'query_id': 'q42', 'importance': 0.92, ...}, ...]
+            >>> print(f"Estimated error: {optimal['estimated_error']:.3f}")
+            Estimated error: 0.085
+        """
+        if self.benchmark_name is None:
+            raise ValueError(
+                "No benchmark loaded. Call load_benchmark() first."
+            )
+
+        # Prepare headers - include auth token if available
+        headers = {}
+        if _AUTH_STATE['authenticated']:
+            headers['Authorization'] = f"Bearer {_AUTH_STATE['token']}"
+
+        response = requests.get(
+            f"{self._base_url}/benchmarks/{self.benchmark_name}/optimal-queries",
+            headers=headers,
+            params={'budget': budget}
+        )
+        response.raise_for_status()
+
+        results = response.json()
+        print(f"✓ Selected {len(results.get('queries', []))} optimal queries")
+        return results
+
+    def estimate_query_budget(self, target_error: float = 0.05) -> Dict:
+        """Estimate the number of queries needed for a target prediction error
+
+        Uses leave-one-model-out cross-validation to estimate how prediction
+        error decreases as more queries are included.
+
+        Args:
+            target_error: Target MAE for predictions (default 0.05)
+
+        Returns:
+            Dict with:
+                - estimated_queries: Estimated number of queries needed
+                - confidence_interval: [lower, upper] bound estimates
+                - error_curve: List of (budget, MAE, std) tuples
+                - total_queries: Total queries in benchmark
+
+        Raises:
+            ValueError: If no benchmark is loaded
+
+        Example:
+            >>> quench = Quench().load_benchmark('math_eval')
+            >>> budget_info = quench.estimate_query_budget(target_error=0.05)
+            >>> print(f"Need {budget_info['estimated_queries']} queries for 5% error")
+            Need 25 queries for 5% error
+            >>> print(f"Confidence interval: {budget_info['confidence_interval']}")
+            Confidence interval: [22, 30]
+        """
+        if self.benchmark_name is None:
+            raise ValueError(
+                "No benchmark loaded. Call load_benchmark() first."
+            )
+
+        # Prepare headers - include auth token if available
+        headers = {}
+        if _AUTH_STATE['authenticated']:
+            headers['Authorization'] = f"Bearer {_AUTH_STATE['token']}"
+
+        response = requests.get(
+            f"{self._base_url}/benchmarks/{self.benchmark_name}/query-budget",
+            headers=headers,
+            params={'target_error': target_error}
+        )
+        response.raise_for_status()
+
+        results = response.json()
+        print(f"✓ Estimated {results.get('estimated_queries', 'N/A')} queries for {target_error:.1%} error")
+        return results
+
     def list_models(self) -> List[str]:
         """Get list of models in current benchmark
         
