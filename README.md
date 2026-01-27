@@ -1,8 +1,12 @@
-# quench
+# Quench
 
 Python SDK for query-efficient LLM benchmark score prediction.
 
-quench uses behavioral similarity to cached models to predict benchmark scores from a fraction of the queries, dramatically reducing evaluation costs.
+Quench uses behavioral similarity to cached models to predict benchmark scores from a fraction of the queries, dramatically reducing evaluation costs.
+
+**API:** https://quench.helivan.io/api
+**Web App:** https://quench.helivan.io
+**Documentation:** https://github.com/helivan-research/quench
 
 ## Installation
 
@@ -39,12 +43,17 @@ Required for private benchmarks and creating/modifying data:
 ```python
 from quench import login, logout
 
-# Login with API key
-login(api_key="sk_abc123...", base_url="https://api.quench.io")
+# Login with API key (uses https://quench.helivan.io/api by default)
+login(api_key="qk_abc123...")
+
+# Or specify a custom API URL
+login(api_key="qk_abc123...", base_url="https://your-server.com/api")
 
 # Logout when done
 logout()
 ```
+
+Get your API key from **Settings → API Keys** in the [web app](https://quench.helivan.io).
 
 ## Core API
 
@@ -57,7 +66,7 @@ from quench import Quench
 q = Quench().load_benchmark('helm_gsm8k')
 
 # Load private benchmark (requires auth)
-login(api_key="sk_...")
+login(api_key="qk_...")
 q = Quench().load_benchmark('my_private_benchmark')
 ```
 
@@ -124,7 +133,7 @@ for point in budget_info['error_curve']:
 ```python
 from quench import Quench, login
 
-login(api_key="sk_...")
+login(api_key="qk_...")
 
 # Create a new benchmark
 benchmark_data = {
@@ -257,9 +266,9 @@ print(metadata)  # {'version': 'gpt-4-turbo', 'temperature': 0.7}
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/api-keys` | GET | List user's API keys |
-| `/api-keys` | POST | Create new API key |
-| `/api-keys/<id>` | DELETE | Delete API key |
+| `/auth/api-keys` | GET | List user's API keys |
+| `/auth/api-keys` | POST | Create new API key |
+| `/auth/api-keys/<id>` | DELETE | Delete API key |
 
 ## Data Format
 
@@ -365,7 +374,7 @@ print(f"Saved {100 * (1 - 20/optimal['total_queries']):.0f}% of evaluation cost!
 ```python
 from quench import Quench, login
 
-login(api_key="sk_...")
+login(api_key="qk_...")
 q = Quench().load_benchmark('my_benchmark')
 
 # Get scores for all cached models
@@ -383,12 +392,29 @@ try:
     q = Quench().load_benchmark('private_benchmark')
 except AuthenticationError:
     print("Need to login first")
-    login(api_key="sk_...")
+    login(api_key="qk_...")
     q = Quench().load_benchmark('private_benchmark')
 except BenchmarkNotFoundError:
     print("Benchmark doesn't exist")
 ```
 
+## Getting an API Key
+
+1. Sign up at [quench.helivan.io](https://quench.helivan.io)
+2. Go to **Settings** (user menu in top-right)
+3. Navigate to **API Keys**
+4. Click **Create API Key**
+5. Copy the key (it starts with `qk_`)
+
+## Feedback & Support
+
+- **Issues:** [github.com/helivan-research/quench/issues](https://github.com/helivan-research/quench/issues)
+- **Email:** info@helivan.io
+
 ## License
 
 MIT
+
+---
+
+Built by [Helivan Research](https://helivan.io)
