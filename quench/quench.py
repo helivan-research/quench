@@ -194,7 +194,7 @@ class Quench:
             raise
     
     @_require_auth
-    def create_benchmark(self, response_json: Dict, benchmark_name: str, **kwargs):
+    def create_benchmark(self, response_json: Dict, benchmark_name: str, embedding_model: str = "google/gemini-embedding-001", **kwargs):
         """Create a new benchmark from initial model responses
         
         Args:
@@ -248,6 +248,7 @@ class Quench:
         payload = {
             'benchmark_name': benchmark_name,
             'benchmark_data': response_json,
+            'embedding_model': embedding_model,
             'metadata': metadata
         }
 
