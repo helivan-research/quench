@@ -189,12 +189,12 @@ metadata = q.get_model_metadata('model_name')
 
 When creating a benchmark, Quench computes embeddings to measure behavioral similarity between models. The platform provides API keys — you just choose a provider and model.
 
-| Provider | Model | Dimensions | Max Tokens | Cost / 1M tokens |
-|----------|-------|------------|------------|-------------------|
-| **google** (default) | `gemini-embedding-001` | 3072 | 2048 | $0.15 |
-| openai | `text-embedding-3-small` | 1536 | 8191 | $0.02 |
-| openai | `text-embedding-3-large` | 3072 | 8191 | $0.13 |
-| openai | `text-embedding-ada-002` | 1536 | 8191 | $0.10 |
+| Provider | Model | Dimensions | Max Tokens |
+|----------|-------|------------|------------|
+| **google** (default) | `gemini-embedding-001` | 3072 | 2048 |
+| openai | `text-embedding-3-small` | 1536 | 8191 |
+| openai | `text-embedding-3-large` | 3072 | 8191 |
+| openai | `text-embedding-ada-002` | 1536 | 8191 |
 
 When creating a benchmark through the web app, select the provider and model in the creation form. The default is Google `gemini-embedding-001`.
 
