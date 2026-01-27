@@ -1,12 +1,24 @@
 # Quench
 
-Python SDK for query-efficient LLM benchmark score prediction.
+Predict benchmark scores from a fraction of the queries.
 
-Quench uses behavioral similarity to cached models to predict benchmark scores from a fraction of the queries, dramatically reducing evaluation costs.
+Quench uses behavioral similarity to predict how a model will perform on an entire benchmark after evaluating only a small subset of queries. This dramatically reduces evaluation costs while maintaining accurate predictions.
 
-**API:** https://quench.helivan.io/api
 **Web App:** https://quench.helivan.io
-**Documentation:** https://github.com/helivan-research/quench
+**API:** https://quench.helivan.io/api
+
+## What is a "Model"?
+
+In Quench, a "model" is any configuration that produces responses to queries. This includes:
+
+- **Different LLMs** (GPT-4, Claude, Llama, etc.)
+- **Different prompts** (system prompts, few-shot examples, instructions)
+- **Different temperatures** or sampling parameters
+- **Different retrieval configurations** (RAG pipelines, vector stores)
+- **Different fine-tunes** of the same base model
+- **Any combination** of the above
+
+If you want to compare how two configurations perform on a benchmark, each configuration is a "model" in Quench.
 
 ## Installation
 
@@ -14,284 +26,181 @@ Quench uses behavioral similarity to cached models to predict benchmark scores f
 pip install quench
 ```
 
-## Quick Start
+## Quickstart
+
+### 1. Create an Account
+
+Sign up at [quench.helivan.io](https://quench.helivan.io)
+
+### 2. Create an API Key
+
+1. Go to **Settings** (user menu in top-right)
+2. Navigate to **API Keys**
+3. Click **Create API Key**
+4. Copy the key (starts with `qk_`)
+
+### 3. (Optional) Create a Benchmark
+
+If you have responses from multiple models to a shared set of queries, you can create your own benchmark:
 
 ```python
 from quench import Quench, login
 
-# Load a public benchmark (no auth required)
-q = Quench().load_benchmark('helm_gsm8k')
+login(api_key="qk_your_key_here")
 
-# Predict scores for a new model using only a subset of queries
-results = q.predict({
-    'my_model': {
-        'gsm': {
-            'q1': {'question': 'What is 2+2?', 'response': ['4']},
-            'q2': {'question': 'What is 3*5?', 'response': ['15']}
-        }
+# Responses from models you've already evaluated
+benchmark_data = {
+    'gpt4_temp0': {
+        'reasoning': {
+            'q1': {'question': 'What is 15% of 80?', 'response': ['12'], 'score': 1.0},
+            'q2': {'question': 'If x + 5 = 12, what is x?', 'response': ['7'], 'score': 1.0},
+            # ... more queries
+        },
+        'score': 0.92  # Overall score for this model
+    },
+    'gpt4_temp07': {
+        'reasoning': {
+            'q1': {'question': 'What is 15% of 80?', 'response': ['12'], 'score': 1.0},
+            'q2': {'question': 'If x + 5 = 12, what is x?', 'response': ['x = 7'], 'score': 1.0},
+            # ... same queries, different responses
+        },
+        'score': 0.88
+    },
+    'claude_with_cot': {
+        'reasoning': {
+            'q1': {'question': 'What is 15% of 80?', 'response': ['Let me think step by step... 12'], 'score': 1.0},
+            'q2': {'question': 'If x + 5 = 12, what is x?', 'response': ['x = 7'], 'score': 1.0},
+        },
+        'score': 0.95
     }
-})
+}
 
-print(f"Predicted score: {results['predicted_scores']['my_model']:.3f}")
-print(f"Similar models: {results['similar_models']}")
+q = Quench().create_benchmark(benchmark_data, 'my-math-benchmark')
 ```
 
-## Authentication
+Or use one of the public benchmarks (HELM, etc.) already available.
 
-Required for private benchmarks and creating/modifying data:
+### 4. Predict Scores for a New Model
+
+Now evaluate a new configuration on just a subset of queries and predict its full benchmark score:
+
+```python
+from quench import Quench, login
+
+login(api_key="qk_your_key_here")
+
+# Load your benchmark (or a public one)
+q = Quench().load_benchmark('my-math-benchmark')
+
+# Get the most informative queries to evaluate
+optimal = q.get_optimal_queries(budget=20)
+print(f"Evaluate these {len(optimal['queries'])} queries:")
+for query in optimal['queries']:
+    print(f"  {query['subtask']}/{query['query_id']}: {query['question']}")
+
+# After running your new model on those queries...
+new_model_responses = {
+    'llama_finetuned': {
+        'reasoning': {
+            'q1': {'question': 'What is 15% of 80?', 'response': ['12']},
+            'q2': {'question': 'If x + 5 = 12, what is x?', 'response': ['7']},
+            # ... responses to the optimal queries
+        }
+    }
+}
+
+# Predict the full benchmark score
+results = q.predict(new_model_responses)
+
+print(f"Predicted score: {results['predicted_scores']['llama_finetuned']:.3f}")
+print(f"Confidence interval: {results['confidence_interval']['llama_finetuned']}")
+print(f"Most similar to: {results['similar_models'][0]['name']}")
+```
+
+## Core Concepts
+
+### Benchmarks
+
+A benchmark is a collection of queries organized into subtasks, with responses from multiple models. Quench learns the behavioral patterns across these models to predict scores for new models.
+
+### Optimal Query Selection
+
+Not all queries are equally informative. Quench identifies which queries best differentiate between models, so you can evaluate the most valuable ones first.
+
+```python
+# Get the 15 most informative queries
+optimal = q.get_optimal_queries(budget=15)
+
+# Or: how many queries do I need for 5% error?
+budget = q.estimate_query_budget(target_error=0.05)
+print(f"Need ~{budget['estimated_queries']} queries for 5% prediction error")
+```
+
+### Prediction
+
+Given partial responses (a model's answers to a subset of queries), Quench:
+1. Computes behavioral similarity to cached models
+2. Uses this similarity to predict performance on unseen queries
+3. Returns a predicted overall score with confidence intervals
+
+## API Reference
+
+### Authentication
 
 ```python
 from quench import login, logout
 
-# Login with API key (uses https://quench.helivan.io/api by default)
-login(api_key="qk_abc123...")
-
-# Or specify a custom API URL
-login(api_key="qk_abc123...", base_url="https://your-server.com/api")
-
-# Logout when done
-logout()
+login(api_key="qk_...")  # Required for private benchmarks and creating data
+logout()                  # Clear authentication
 ```
 
-Get your API key from **Settings → API Keys** in the [web app](https://quench.helivan.io).
-
-## Core API
-
-### Loading Benchmarks
+### Quench Class
 
 ```python
 from quench import Quench
 
-# Load public benchmark (no auth)
-q = Quench().load_benchmark('helm_gsm8k')
+q = Quench()
 
-# Load private benchmark (requires auth)
-login(api_key="qk_...")
-q = Quench().load_benchmark('my_private_benchmark')
-```
-
-### Predicting Scores
-
-Predict the overall benchmark score for a model that has only answered a subset of queries:
-
-```python
-# Partial responses - only answered some queries
-partial_responses = {
-    'my_model': {
-        'algebra': {
-            'q1': {'question': '2+2?', 'response': ['4']},
-            'q2': {'question': '3*3?', 'response': ['9']}
-        }
-        # Note: other subtasks not included - this is partial evaluation
-    }
-}
-
-results = q.predict(partial_responses)
-
-print(results['predicted_scores'])       # {'my_model': 0.87}
-print(results['confidence_interval'])    # {'my_model': [0.82, 0.92]}
-print(results['similar_models'])         # Most similar cached models
-print(results['overlap_info'])           # Query coverage statistics
-```
-
-### Optimal Query Selection
-
-Find the most informative queries to maximize prediction accuracy with minimal evaluation:
-
-```python
-# Get top 15 most informative queries
-optimal = q.get_optimal_queries(budget=15)
-
-print(optimal['queries'][:3])
-# [
-#   {'subtask': 'algebra', 'query_id': 'q42', 'importance': 0.92, ...},
-#   {'subtask': 'geometry', 'query_id': 'q17', 'importance': 0.88, ...},
-#   ...
-# ]
-
-print(f"Estimated error with 15 queries: {optimal['estimated_error']:.3f}")
-```
-
-### Budget Estimation
-
-Estimate how many queries you need for a target prediction accuracy:
-
-```python
-# How many queries for 5% error?
-budget_info = q.estimate_query_budget(target_error=0.05)
-
-print(f"Need {budget_info['estimated_queries']} queries for 5% error")
-print(f"Confidence interval: {budget_info['confidence_interval']}")
-
-# View the full error curve
-for point in budget_info['error_curve']:
-    print(f"  {point['k']} queries -> {point['mae']:.3f} MAE")
-```
-
-### Managing Benchmarks
-
-```python
-from quench import Quench, login
-
-login(api_key="qk_...")
+# Load a benchmark
+q.load_benchmark('benchmark_name')
 
 # Create a new benchmark
-benchmark_data = {
-    'gpt4': {
-        'math': {
-            'q1': {
-                'question': '2+2=?',
-                'response': ['4'],
-                'score': 1.0
-            }
-        },
-        'score': 0.95
-    },
-    'claude': {
-        'math': {
-            'q1': {
-                'question': '2+2=?',
-                'response': ['4'],
-                'score': 1.0
-            }
-        },
-        'score': 0.92
-    }
-}
+q.create_benchmark(data, 'new_benchmark_name')
 
-q = Quench().create_benchmark(benchmark_data, 'my_benchmark')
+# Add a model to the loaded benchmark
+q.add_model(model_data)
 
-# Add a new model
-q.add_model({
-    'gemini': {
-        'math': {
-            'q1': {
-                'question': '2+2=?',
-                'response': ['4'],
-                'score': 1.0
-            }
-        },
-        'score': 0.90
-    }
-})
+# Predict scores for partial responses
+results = q.predict(partial_responses)
 
-# Remove a model
-q.remove_model('gemini')
+# Get optimal queries for a budget
+optimal = q.get_optimal_queries(budget=20)
 
-# List all models
-print(q.list_models())  # ['gpt4', 'claude']
-```
+# Estimate queries needed for target error
+budget = q.estimate_query_budget(target_error=0.05)
 
-### Exploring Benchmark Data
-
-```python
-# List models in benchmark
+# Explore the benchmark
 models = q.list_models()
-print(models)  # ['gpt4', 'claude', 'gemini']
-
-# Get all queries
 queries = q.get_query_dictionary()
-print(queries)
-# {'math/q1': '2+2=?', 'math/q2': '3*3=?', 'logic/q1': 'If A then B...'}
-
-# Get queries for specific subtask
-math_queries = q.get_query_dictionary(subtask='math')
-print(math_queries)  # {'q1': '2+2=?', 'q2': '3*3=?'}
-
-# Get model metadata
-metadata = q.get_model_metadata('gpt4')
-print(metadata)  # {'version': 'gpt-4-turbo', 'temperature': 0.7}
+metadata = q.get_model_metadata('model_name')
 ```
-
-## SDK Reference
-
-### Authentication Functions
-
-| Function | Description |
-|----------|-------------|
-| `login(api_key, base_url)` | Authenticate with API key |
-| `logout()` | Clear authentication state |
-
-### Quench Class Methods
-
-| Method | Auth Required | Description |
-|--------|---------------|-------------|
-| `load_benchmark(name)` | No* | Load benchmark from server |
-| `create_benchmark(data, name)` | Yes | Create new benchmark |
-| `add_model(data, model_name)` | Yes | Add model to benchmark |
-| `remove_model(name)` | Yes | Remove model from benchmark |
-| `predict(data)` | No* | Predict scores for new model |
-| `get_optimal_queries(budget)` | No* | Get most informative queries |
-| `estimate_query_budget(target_error)` | No* | Estimate queries needed |
-| `list_models()` | No | List models in loaded benchmark |
-| `get_query_dictionary(subtask)` | No | Get query ID to question mapping |
-| `get_model_metadata(model_name)` | No | Get metadata for a model |
-
-\* Auth required for private benchmarks
-
-## REST API Endpoints
-
-### Authentication
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/auth/login` | POST | Login with email/password or API key |
-| `/auth/google` | POST | Login with Google OAuth |
-| `/auth/register` | POST | Register new account |
-| `/auth/me` | GET | Get current user info |
-
-### Benchmarks
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/benchmarks` | GET | List all accessible benchmarks |
-| `/benchmarks` | POST | Create new benchmark |
-| `/benchmarks/<name>` | GET | Get benchmark details |
-| `/benchmarks/<name>` | DELETE | Delete benchmark |
-| `/benchmarks/<name>/summary` | GET | Get benchmark summary (lightweight) |
-| `/benchmarks/<name>/visualize` | GET | Get MDS visualization HTML |
-| `/benchmarks/<name>/models/<model>` | PATCH | Add/update model |
-| `/benchmarks/<name>/models/<model>` | DELETE | Remove model |
-
-### Prediction & Analysis
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/evaluate/predict` | POST | Predict scores for new model |
-| `/benchmarks/<name>/predict` | POST | Predict using stored benchmark |
-| `/benchmarks/<name>/optimal-queries` | GET | Get optimal query selection |
-| `/benchmarks/<name>/query-budget` | GET | Estimate queries for target error |
-
-### API Keys
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/auth/api-keys` | GET | List user's API keys |
-| `/auth/api-keys` | POST | Create new API key |
-| `/auth/api-keys/<id>` | DELETE | Delete API key |
 
 ## Data Format
 
-### Benchmark Data Schema
+### Benchmark/Model Data
 
 ```python
 {
     'model_name': {
         'subtask_name': {
             'query_id': {
-                'question': str,           # The question/prompt
-                'response': [str, ...],    # Model response(s)
-                'score': float,            # Optional: query score (0-1)
-                'reasoning': [str, ...],   # Optional: reasoning steps
-                'metadata': {}             # Optional: additional data
-            },
-            'score': float,                # Optional: subtask score
-            'metadata': {}
+                'question': str,        # The prompt/question
+                'response': [str],      # Model's response(s)
+                'score': float,         # Optional: 0-1 score for this query
+            }
         },
-        'score': float,                    # Optional: model's overall score
-        'metadata': {}                     # Optional: model metadata
-    },
-    'metadata': {}                         # Optional: benchmark metadata
+        'score': float  # Optional: overall score for this model
+    }
 }
 ```
 
@@ -302,109 +211,43 @@ print(metadata)  # {'version': 'gpt-4-turbo', 'temperature': 0.7}
     'predicted_scores': {'model_name': 0.87},
     'confidence_interval': {'model_name': [0.82, 0.92]},
     'similar_models': [
-        {'name': 'gpt4', 'score': 0.92, 'similarity': 0.95},
-        {'name': 'claude', 'score': 0.89, 'similarity': 0.91}
-    ],
-    'overlap_info': {
-        'queries_evaluated': 15,
-        'total_queries': 500,
-        'coverage': 0.03
-    },
-    'visualization_html': '...'  # Interactive Plotly chart
-}
-```
-
-### Optimal Queries Response
-
-```python
-{
-    'benchmark_name': 'helm_math',
-    'budget': 15,
-    'queries': [
-        {
-            'subtask': 'algebra',
-            'query_id': 'q42',
-            'question': 'Solve for x: 2x + 5 = 13',
-            'importance': 0.92,
-            'breakdown': {
-                'correlation': 0.95,
-                'variance': 0.88,
-                'diversity': 1.0
-            },
-            'rank': 1
-        },
+        {'name': 'gpt4', 'similarity': 0.95, 'score': 0.92},
         ...
     ],
-    'total_queries': 500,
-    'estimated_error': 0.08,
-    'model_count': 12
+    'overlap_info': {
+        'queries_evaluated': 20,
+        'total_queries': 500,
+        'coverage': 0.04
+    }
 }
 ```
 
-## Examples
-
-### Efficient Model Evaluation
-
-```python
-from quench import Quench
-
-# Load benchmark
-q = Quench().load_benchmark('helm_math')
-
-# Get optimal queries for your budget
-optimal = q.get_optimal_queries(budget=20)
-
-# Evaluate your model on just these queries
-queries_to_run = [
-    (query['subtask'], query['query_id'], query['question'])
-    for query in optimal['queries']
-]
-
-# Run your model on the selected queries...
-my_responses = run_model_on_queries(queries_to_run)  # Your evaluation code
-
-# Predict full benchmark score
-results = q.predict({'my_model': my_responses})
-print(f"Predicted score: {results['predicted_scores']['my_model']:.3f}")
-print(f"Saved {100 * (1 - 20/optimal['total_queries']):.0f}% of evaluation cost!")
-```
-
-### Comparing Models
+## Example: Comparing Prompt Variants
 
 ```python
 from quench import Quench, login
 
 login(api_key="qk_...")
-q = Quench().load_benchmark('my_benchmark')
 
-# Get scores for all cached models
-for model in q.list_models():
-    metadata = q.get_model_metadata(model)
-    print(f"{model}: {metadata.get('score', 'N/A')}")
+# You have a benchmark with various prompting strategies
+q = Quench().load_benchmark('prompt-comparison')
+
+# Test a new prompt variant on just 25 queries
+optimal = q.get_optimal_queries(budget=25)
+
+# Run your new prompt on those queries and collect responses...
+new_prompt_responses = {
+    'cot_v2_with_examples': {
+        'math': {
+            'q42': {'question': '...', 'response': ['...']},
+            # ... 24 more queries
+        }
+    }
+}
+
+results = q.predict(new_prompt_responses)
+print(f"Predicted score for new prompt: {results['predicted_scores']['cot_v2_with_examples']:.1%}")
 ```
-
-## Error Handling
-
-```python
-from quench import Quench, login, AuthenticationError, BenchmarkNotFoundError
-
-try:
-    q = Quench().load_benchmark('private_benchmark')
-except AuthenticationError:
-    print("Need to login first")
-    login(api_key="qk_...")
-    q = Quench().load_benchmark('private_benchmark')
-except BenchmarkNotFoundError:
-    print("Benchmark doesn't exist")
-```
-
-## Getting an API Key
-
-1. Sign up at [quench.helivan.io](https://quench.helivan.io)
-2. Go to **Settings** (user menu in top-right)
-3. Navigate to **API Keys**
-4. Click **Create API Key**
-5. Copy the key (it starts with `qk_`)
 
 ## Feedback & Support
 
