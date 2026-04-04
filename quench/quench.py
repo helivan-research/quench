@@ -238,8 +238,9 @@ class _BenchmarkNamespace:
 
         return Benchmark._from_api(self._client, benchmark_name, data)
 
-    # 50 MB threshold for switching to presigned R2 upload
-    _LARGE_FILE_THRESHOLD = 50 * 1024 * 1024
+    # 10 MB threshold for switching to presigned R2 upload
+    # (Railway's proxy times out on larger inline payloads)
+    _LARGE_FILE_THRESHOLD = 10 * 1024 * 1024
 
     def create(
         self,
@@ -292,10 +293,12 @@ class _BenchmarkNamespace:
                 json={"filename": f"{benchmark_name}.json", "content_type": "application/json"},
                 auth=True,
             )
-            upload_url = presign_resp["url"]
-            storage_key = presign_resp["key"]
+            upload_url = presign_resp["upload_url"]
+            storage_key = presign_resp["storage_key"]
 
-            self._client._put_raw(upload_url, serialized.encode(), content_type="application/json")
+            # Scale timeout with payload size (~2s per MB, minimum 120s)
+            upload_timeout = max(LONG_TIMEOUT, len(serialized) // (1024 * 1024) * 2)
+            self._client._put_raw(upload_url, serialized.encode(), content_type="application/json", timeout=upload_timeout)
             logger.info("Uploaded benchmark data to storage")
 
             payload["storage_key"] = storage_key

@@ -543,7 +543,7 @@ class TestPresignedUpload:
 
             mock_session.post.side_effect = [
                 _make_response({"token": "jwt", "user_id": "u1"}),  # login
-                _make_response({"url": "https://r2.example.com/upload", "key": "uploads/test.json"}),  # presign
+                _make_response({"upload_url": "https://r2.example.com/upload", "storage_key": "uploads/test.json", "expires_in": 3600}),  # presign
                 _make_response({"benchmark_id": "b1", "status": "processing"}),  # create
             ]
             mock_session.put.return_value = _make_response(None, text="")
