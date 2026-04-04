@@ -1,328 +1,589 @@
 """
-Tests for Quench client library
+Tests for the Quench SDK.
 
-Tests cover:
-- Authentication (login/logout)
-- Benchmark operations (create, load, add_model, remove_model)
-- Evaluation (predict)
-- Helper methods (list_models, get_query_dictionary)
+Covers:
+- QuenchClient authentication
+- Benchmark load/create/delete
+- Model add/remove
+- Prediction and query selection
+- Helper methods (models, query_dictionary, metadata)
+- Validation
+- Error handling
 """
 
 import pytest
-from unittest.mock import patch, MagicMock
-import sys
-import os
+from unittest.mock import MagicMock
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from quench import QuenchClient, AuthenticationError, BenchmarkNotFoundError
+from quench.quench import (
+    Benchmark,
+    NotFoundError,
+    RateLimitError,
+    QuenchAPIError,
+    _validate_response_data,
+    _validate_model_data,
+)
+from tests.conftest import _make_response
 
-from quench import Quench, login, logout, AuthenticationError, BenchmarkNotFoundError
 
+# ---------------------------------------------------------------------------
+# Authentication
+# ---------------------------------------------------------------------------
 
 class TestAuthentication:
-    """Tests for login/logout functionality"""
 
-    def test_login_success(self, mock_auth_state, mock_requests):
-        """Test successful login"""
-        mock_response = MagicMock()
-        mock_response.json.return_value = {'user_id': 'user_abc123'}
-        mock_response.raise_for_status = MagicMock()
-        mock_requests.post.return_value = mock_response
+    def test_client_uses_explicit_api_key(self, mock_session):
+        client = QuenchClient(api_key="qk_test123")
+        assert client.api_key == "qk_test123"
 
-        result = login(api_key='sk_test_key')
+    def test_client_falls_back_to_env_var(self, mock_session, monkeypatch):
+        monkeypatch.setenv("QUENCH_API_KEY", "qk_from_env")
+        client = QuenchClient()
+        assert client.api_key == "qk_from_env"
 
-        assert result is True
-        assert mock_auth_state['authenticated'] is True
-        assert mock_auth_state['user_id'] == 'user_abc123'
-        assert mock_auth_state['api_key'] == 'sk_test_key'
+    def test_ensure_auth_posts_login(self, mock_session):
+        mock_session.post.return_value = _make_response(
+            {"token": "jwt_abc", "user_id": "user_1"}
+        )
+        client = QuenchClient(api_key="qk_test")
+        client._ensure_auth()
 
-    def test_login_failure(self, mock_auth_state, mock_requests):
-        """Test failed login"""
-        from requests.exceptions import RequestException
-        mock_requests.post.side_effect = RequestException('Connection failed')
+        mock_session.post.assert_called_once()
+        call_url = mock_session.post.call_args[0][0]
+        assert "/auth/login" in call_url
+        assert client._jwt_token == "jwt_abc"
+        assert client._jwt_user_id == "user_1"
 
-        result = login(api_key='sk_invalid_key')
+    def test_ensure_auth_caches_token(self, mock_session):
+        mock_session.post.return_value = _make_response(
+            {"token": "jwt_abc", "user_id": "user_1"}
+        )
+        client = QuenchClient(api_key="qk_test")
+        client._ensure_auth()
+        client._ensure_auth()  # second call should not re-login
+        assert mock_session.post.call_count == 1
 
-        assert result is False
-        assert mock_auth_state['authenticated'] is False
+    def test_ensure_auth_raises_without_key(self, mock_session):
+        client = QuenchClient()
+        with pytest.raises(AuthenticationError, match="No API key"):
+            client._ensure_auth()
 
-    def test_login_custom_base_url(self, mock_auth_state, mock_requests):
-        """Test login with custom base URL"""
-        mock_response = MagicMock()
-        mock_response.json.return_value = {'user_id': 'user_xyz'}
-        mock_response.raise_for_status = MagicMock()
-        mock_requests.post.return_value = mock_response
-
-        login(api_key='sk_test', base_url='http://custom.api.com')
-
-        mock_requests.post.assert_called_once()
-        call_url = mock_requests.post.call_args[0][0]
-        assert 'http://custom.api.com' in call_url
-
-    def test_logout(self, authenticated_state):
-        """Test logout clears state"""
-        logout()
-
-        from quench import quench as quench_module
-        assert quench_module._AUTH_STATE['authenticated'] is False
-        assert quench_module._AUTH_STATE['api_key'] is None
-        assert quench_module._AUTH_STATE['user_id'] is None
-
-
-class TestBenchmarkOperations:
-    """Tests for benchmark CRUD operations"""
-
-    def test_load_benchmark_public(self, mock_auth_state, mock_requests, sample_benchmark_data):
-        """Test loading a public benchmark without auth"""
-        mock_response = MagicMock()
-        mock_response.json.return_value = {
-            'benchmark_data': sample_benchmark_data,
-            'metadata': {'is_public': True}
-        }
-        mock_response.raise_for_status = MagicMock()
-        mock_requests.get.return_value = mock_response
-
-        quench = Quench().load_benchmark('public_benchmark')
-
-        assert quench.benchmark_name == 'public_benchmark'
-        assert quench.benchmark_data is not None
-        assert 'gpt4' in quench.benchmark_data
-
-    def test_load_benchmark_private_requires_auth(self, mock_auth_state, mock_requests):
-        """Test loading private benchmark without auth raises error"""
-        from requests.exceptions import HTTPError
-        mock_response = MagicMock()
-        mock_response.status_code = 403
-        mock_response.raise_for_status.side_effect = HTTPError(response=mock_response)
-        mock_requests.get.return_value = mock_response
-
+    def test_auth_failure_raises(self, mock_session):
+        mock_session.post.return_value = _make_response(
+            {"error": "Invalid API key"}, status_code=401, ok=False
+        )
+        client = QuenchClient(api_key="qk_bad")
         with pytest.raises(AuthenticationError):
-            Quench().load_benchmark('private_benchmark')
+            client._ensure_auth()
 
-    def test_load_benchmark_not_found(self, mock_auth_state, mock_requests):
-        """Test loading non-existent benchmark raises error"""
-        from requests.exceptions import HTTPError
-        mock_response = MagicMock()
-        mock_response.status_code = 404
-        mock_response.raise_for_status.side_effect = HTTPError(response=mock_response)
-        mock_requests.get.return_value = mock_response
 
+# ---------------------------------------------------------------------------
+# Benchmark.load
+# ---------------------------------------------------------------------------
+
+class TestBenchmarkLoad:
+
+    def test_load_public_benchmark(self, mock_session, sample_benchmark_data):
+        mock_session.get.return_value = _make_response({
+            "benchmark_data": sample_benchmark_data,
+            "metadata": {"is_public": True},
+        })
+
+        client = QuenchClient()  # no API key needed for public
+        bm = client.benchmarks.load("public_bench")
+
+        assert bm.name == "public_bench"
+        assert "gpt4" in bm.models
+        assert "metadata" not in bm.models
+
+    def test_load_not_found(self, mock_session):
+        mock_session.get.return_value = _make_response(
+            {"error": "Not found"}, status_code=404, ok=False
+        )
+        client = QuenchClient()
         with pytest.raises(BenchmarkNotFoundError):
-            Quench().load_benchmark('nonexistent')
+            client.benchmarks.load("nonexistent")
 
-    def test_create_benchmark_requires_auth(self, mock_auth_state, sample_benchmark_data):
-        """Test creating benchmark without auth raises error"""
-        quench = Quench()
-
+    def test_load_private_unauthenticated(self, mock_session):
+        mock_session.get.return_value = _make_response(
+            {"error": "Forbidden"}, status_code=403, ok=False
+        )
+        client = QuenchClient()
         with pytest.raises(AuthenticationError):
-            quench.create_benchmark(sample_benchmark_data, 'new_benchmark')
+            client.benchmarks.load("private_bench")
 
-    def test_create_benchmark_success(self, authenticated_state, mock_requests, sample_benchmark_data):
-        """Test successful benchmark creation"""
-        mock_response = MagicMock()
-        mock_response.raise_for_status = MagicMock()
-        mock_requests.post.return_value = mock_response
 
-        quench = Quench()
-        result = quench.create_benchmark(sample_benchmark_data, 'my_new_benchmark')
+# ---------------------------------------------------------------------------
+# Benchmark.create
+# ---------------------------------------------------------------------------
 
-        assert result is quench  # Returns self for chaining
-        assert quench.benchmark_name == 'my_new_benchmark'
-        assert quench.benchmark_data == sample_benchmark_data
+class TestBenchmarkCreate:
 
-    def test_add_model_requires_auth(self, mock_auth_state, sample_benchmark_data, sample_model_response):
-        """Test adding model without auth raises error"""
-        quench = Quench()
-        quench.benchmark_data = sample_benchmark_data
-        quench.benchmark_name = 'test_benchmark'
+    def _setup_auth(self, mock_session):
+        mock_session.post.return_value = _make_response(
+            {"token": "jwt_abc", "user_id": "u1"}
+        )
 
+    def test_create_success(self, mock_session, sample_benchmark_data):
+        # First call = auth login, second = create
+        mock_session.post.side_effect = [
+            _make_response({"token": "jwt_abc", "user_id": "u1"}),
+            _make_response({"benchmark_id": "bench_123", "status": "processing", "metadata": {}}),
+        ]
+        client = QuenchClient(api_key="qk_test")
+        bm = client.benchmarks.create("new_bench", sample_benchmark_data)
+
+        assert bm.name == "new_bench"
+        assert bm.status == "processing"
+        assert bm._benchmark_id == "bench_123"
+
+    def test_create_requires_auth(self, mock_session, sample_benchmark_data):
+        client = QuenchClient()  # no api key
         with pytest.raises(AuthenticationError):
-            quench.add_model(sample_model_response)
+            client.benchmarks.create("new_bench", sample_benchmark_data)
 
-    def test_add_model_success(self, authenticated_state, mock_requests, sample_benchmark_data, sample_model_response):
-        """Test successful model addition"""
-        mock_response = MagicMock()
-        mock_response.raise_for_status = MagicMock()
-        mock_requests.patch.return_value = mock_response
+    def test_create_validates_data(self, mock_session):
+        self._setup_auth(mock_session)
+        client = QuenchClient(api_key="qk_test")
 
-        quench = Quench()
-        quench.benchmark_data = sample_benchmark_data.copy()
-        quench.benchmark_name = 'test_benchmark'
-
-        result = quench.add_model(sample_model_response)
-
-        assert result is quench
-        assert 'claude' in quench.benchmark_data
-
-    def test_add_model_no_benchmark_loaded(self, authenticated_state, sample_model_response):
-        """Test adding model when no benchmark is loaded raises error"""
-        quench = Quench()
-
-        with pytest.raises(ValueError, match="No benchmark loaded"):
-            quench.add_model(sample_model_response)
-
-    def test_remove_model_success(self, authenticated_state, mock_requests, sample_benchmark_data):
-        """Test successful model removal"""
-        mock_response = MagicMock()
-        mock_response.raise_for_status = MagicMock()
-        mock_requests.delete.return_value = mock_response
-
-        quench = Quench()
-        quench.benchmark_data = sample_benchmark_data.copy()
-        quench.benchmark_name = 'test_benchmark'
-
-        result = quench.remove_model('gpt4')
-
-        assert result is quench
-        assert 'gpt4' not in quench.benchmark_data
+        invalid = {"model1": {"sub1": {"q1": {"question": "x"}}}}  # missing response
+        with pytest.raises(ValueError, match="Missing 'response'"):
+            client.benchmarks.create("bad_bench", invalid)
 
 
-class TestEvaluation:
-    """Tests for predict/evaluation functionality"""
+# ---------------------------------------------------------------------------
+# Benchmark list / list_mine
+# ---------------------------------------------------------------------------
 
-    def test_predict_public_benchmark(self, mock_auth_state, mock_requests, sample_benchmark_data):
-        """Test evaluation of public benchmark without auth"""
-        # Load benchmark
-        mock_get = MagicMock()
-        mock_get.json.return_value = {
-            'benchmark_data': sample_benchmark_data,
-            'metadata': {'is_public': True}
+class TestBenchmarkList:
+
+    def test_list_public(self, mock_session):
+        mock_session.get.return_value = _make_response([
+            {"name": "bench1"}, {"name": "bench2"}
+        ])
+        client = QuenchClient()
+        result = client.benchmarks.list()
+        assert len(result) == 2
+
+    def test_list_mine(self, mock_session):
+        mock_session.post.return_value = _make_response(
+            {"token": "jwt", "user_id": "u1"}
+        )
+        mock_session.get.return_value = _make_response([{"name": "my_bench"}])
+
+        client = QuenchClient(api_key="qk_test")
+        result = client.benchmarks.list_mine()
+        assert len(result) == 1
+
+
+# ---------------------------------------------------------------------------
+# Benchmark model operations
+# ---------------------------------------------------------------------------
+
+class TestModelOperations:
+
+    def _make_loaded_benchmark(self, mock_session, sample_benchmark_data):
+        mock_session.get.return_value = _make_response({
+            "benchmark_data": sample_benchmark_data,
+            "metadata": {},
+        })
+        mock_session.post.return_value = _make_response(
+            {"token": "jwt", "user_id": "u1"}
+        )
+        client = QuenchClient(api_key="qk_test")
+        return client.benchmarks.load("test_bench")
+
+    def test_add_model(self, mock_session, sample_benchmark_data, sample_model_response):
+        bm = self._make_loaded_benchmark(mock_session, sample_benchmark_data)
+        mock_session.patch.return_value = _make_response({})
+
+        result = bm.add_model(sample_model_response)
+        assert result is bm
+        assert "claude" in bm.models
+
+    def test_add_model_with_name(self, mock_session, sample_benchmark_data):
+        bm = self._make_loaded_benchmark(mock_session, sample_benchmark_data)
+        mock_session.patch.return_value = _make_response({})
+
+        subtask_data = {
+            "math": {
+                "q1": {"question": "2+2?", "response": ["4"]},
+            }
         }
-        mock_get.raise_for_status = MagicMock()
+        bm.add_model(subtask_data, model_name="new_model")
+        assert "new_model" in bm.models
 
-        # Evaluation response
-        mock_post = MagicMock()
-        mock_post.json.return_value = {
-            'overall_scores': {'accuracy': 1.0},
-            'model_scores': {'gpt4': {'accuracy': 1.0}}
-        }
-        mock_post.raise_for_status = MagicMock()
+    def test_add_model_no_data_raises(self, mock_session):
+        client = QuenchClient(api_key="qk_test")
+        bm = Benchmark(client, "test")
+        with pytest.raises(ValueError, match="No benchmark data"):
+            bm.add_model({"m": {"s": {"q": {"response": ["x"]}}}})
 
-        mock_requests.get.return_value = mock_get
-        mock_requests.post.return_value = mock_post
+    def test_remove_model(self, mock_session, sample_benchmark_data):
+        bm = self._make_loaded_benchmark(mock_session, sample_benchmark_data)
+        mock_session.delete.return_value = _make_response(None, text="")
 
-        quench = Quench().load_benchmark('public_benchmark')
-        results = quench.predict(metrics=['accuracy'])
+        result = bm.remove_model("gpt4")
+        assert result is bm
+        assert "gpt4" not in bm.models
 
-        assert 'overall_scores' in results
-        assert results['overall_scores']['accuracy'] == 1.0
+    def test_remove_nonexistent_model_raises(self, mock_session, sample_benchmark_data):
+        bm = self._make_loaded_benchmark(mock_session, sample_benchmark_data)
+        with pytest.raises(ValueError, match="not found"):
+            bm.remove_model("nonexistent")
 
-    def test_predict_add_model_requires_auth(self, mock_auth_state, sample_benchmark_data, sample_model_response):
-        """Test predict with add_model=True requires auth"""
-        quench = Quench()
-        quench.benchmark_data = sample_benchmark_data
-        quench.benchmark_name = 'test'
 
-        with pytest.raises(AuthenticationError):
-            quench.predict(sample_model_response, add_model=True)
+# ---------------------------------------------------------------------------
+# Benchmark.delete
+# ---------------------------------------------------------------------------
 
-    def test_predict_no_data(self, mock_auth_state):
-        """Test predict without data raises error"""
-        quench = Quench()
+class TestBenchmarkDelete:
 
-        with pytest.raises(ValueError, match="No data to evaluate"):
-            quench.predict()
+    def test_delete(self, mock_session, sample_benchmark_data):
+        mock_session.get.return_value = _make_response({
+            "benchmark_data": sample_benchmark_data, "metadata": {},
+        })
+        mock_session.post.return_value = _make_response(
+            {"token": "jwt", "user_id": "u1"}
+        )
+        mock_session.delete.return_value = _make_response(None, text="")
 
+        client = QuenchClient(api_key="qk_test")
+        bm = client.benchmarks.load("doomed")
+        bm.delete()
+
+        assert bm._data is None
+
+
+# ---------------------------------------------------------------------------
+# Prediction & query selection
+# ---------------------------------------------------------------------------
+
+class TestPrediction:
+
+    def _make_loaded_benchmark(self, mock_session, sample_benchmark_data):
+        mock_session.get.return_value = _make_response({
+            "benchmark_data": sample_benchmark_data,
+            "metadata": {},
+            "embeddings": {},
+        })
+        client = QuenchClient()
+        return client.benchmarks.load("test_bench")
+
+    def test_predict(self, mock_session, sample_benchmark_data):
+        bm = self._make_loaded_benchmark(mock_session, sample_benchmark_data)
+
+        mock_session.post.return_value = _make_response({
+            "predicted_scores": {"my_model": 0.85},
+            "confidence_interval": {"my_model": [0.80, 0.90]},
+        })
+
+        result = bm.predict({"my_model": {"math": {"q1": {"question": "x", "response": ["y"]}}}})
+        assert result["predicted_scores"]["my_model"] == 0.85
+
+    def test_predict_no_data_raises(self, mock_session):
+        client = QuenchClient()
+        bm = Benchmark(client, "empty")
+        with pytest.raises(ValueError, match="No benchmark data"):
+            bm.predict({"m": {}})
+
+    def test_get_optimal_queries(self, mock_session, sample_benchmark_data):
+        bm = self._make_loaded_benchmark(mock_session, sample_benchmark_data)
+
+        # Second GET call (first was load)
+        mock_session.get.return_value = _make_response({
+            "queries": [{"subtask": "math", "query_id": "q1"}],
+            "total_queries": 2,
+            "estimated_error": 0.05,
+        })
+
+        result = bm.get_optimal_queries(budget=5)
+        assert len(result["queries"]) == 1
+
+    def test_estimate_query_budget(self, mock_session, sample_benchmark_data):
+        bm = self._make_loaded_benchmark(mock_session, sample_benchmark_data)
+
+        mock_session.get.return_value = _make_response({
+            "estimated_queries": 15,
+            "confidence_interval": [12, 18],
+        })
+
+        result = bm.estimate_query_budget(target_error=0.05)
+        assert result["estimated_queries"] == 15
+
+
+# ---------------------------------------------------------------------------
+# Helper methods
+# ---------------------------------------------------------------------------
 
 class TestHelperMethods:
-    """Tests for helper methods"""
 
-    def test_list_models(self, sample_benchmark_data):
-        """Test listing models in benchmark"""
-        quench = Quench()
-        quench.benchmark_data = sample_benchmark_data
+    def _make_benchmark(self, data):
+        from quench.quench import QuenchClient
+        bm = Benchmark(QuenchClient.__new__(QuenchClient), "test")
+        bm._data = data
+        return bm
 
-        models = quench.list_models()
-
-        assert 'gpt4' in models
-        assert 'metadata' not in models
-
-    def test_list_models_no_benchmark(self):
-        """Test list_models without loaded benchmark raises error"""
-        quench = Quench()
-
-        with pytest.raises(ValueError, match="No benchmark loaded"):
-            quench.list_models()
+    def test_models_property(self, sample_benchmark_data):
+        bm = self._make_benchmark(sample_benchmark_data)
+        assert "gpt4" in bm.models
+        assert "metadata" not in bm.models
 
     def test_get_query_dictionary_all(self, sample_benchmark_data):
-        """Test getting all queries"""
-        quench = Quench()
-        quench.benchmark_data = sample_benchmark_data
-
-        queries = quench.get_query_dictionary()
-
-        assert 'math/q1' in queries
-        assert 'math/q2' in queries
-        assert queries['math/q1'] == 'What is 2+2?'
+        bm = self._make_benchmark(sample_benchmark_data)
+        queries = bm.get_query_dictionary()
+        assert "math/q1" in queries
+        assert "math/q2" in queries
+        assert queries["math/q1"] == "What is 2+2?"
 
     def test_get_query_dictionary_subtask(self, sample_benchmark_data):
-        """Test getting queries for specific subtask"""
-        quench = Quench()
-        quench.benchmark_data = sample_benchmark_data
-
-        queries = quench.get_query_dictionary(subtask='math')
-
-        assert 'q1' in queries
-        assert 'q2' in queries
-        # Should NOT have subtask prefix
-        assert 'math/q1' not in queries
+        bm = self._make_benchmark(sample_benchmark_data)
+        queries = bm.get_query_dictionary(subtask="math")
+        assert "q1" in queries
+        assert "math/q1" not in queries
 
     def test_get_query_dictionary_invalid_subtask(self, sample_benchmark_data):
-        """Test getting queries for non-existent subtask raises error"""
-        quench = Quench()
-        quench.benchmark_data = sample_benchmark_data
-
+        bm = self._make_benchmark(sample_benchmark_data)
         with pytest.raises(ValueError, match="not found"):
-            quench.get_query_dictionary(subtask='nonexistent')
+            bm.get_query_dictionary(subtask="nonexistent")
 
     def test_get_model_metadata(self, sample_benchmark_data):
-        """Test getting model metadata"""
-        quench = Quench()
-        quench.benchmark_data = sample_benchmark_data
+        bm = self._make_benchmark(sample_benchmark_data)
+        meta = bm.get_model_metadata("gpt4")
+        assert meta["version"] == "gpt-4-turbo"
 
-        metadata = quench.get_model_metadata('gpt4')
+    def test_get_model_metadata_not_found(self, sample_benchmark_data):
+        bm = self._make_benchmark(sample_benchmark_data)
+        with pytest.raises(ValueError, match="not found"):
+            bm.get_model_metadata("nonexistent")
 
-        assert metadata['version'] == 'gpt-4-turbo'
+    def test_summary(self, mock_session, sample_benchmark_data):
+        mock_session.get.return_value = _make_response({
+            "models": {"gpt4": {"score": 1.0}},
+        })
+        client = QuenchClient()
+        bm = Benchmark(client, "test")
+        bm._data = sample_benchmark_data
+        result = bm.summary()
+        assert "models" in result
 
+
+# ---------------------------------------------------------------------------
+# Validation
+# ---------------------------------------------------------------------------
 
 class TestValidation:
-    """Tests for data validation"""
 
-    def test_validate_missing_required_field(self, authenticated_state, mock_requests):
-        """Test validation catches missing required fields"""
-        invalid_data = {
-            'model1': {
-                'subtask1': {
-                    'q1': {
-                        'question': 'test',
-                        # Missing: response, reasoning, response_score, score
-                    }
-                }
-            }
-        }
+    def test_validate_missing_response(self):
+        invalid = {"model1": {"sub1": {"q1": {"question": "test"}}}}
+        with pytest.raises(ValueError, match="Missing 'response'"):
+            _validate_response_data(invalid)
 
-        quench = Quench()
+    def test_validate_valid_data(self, sample_benchmark_data):
+        # Should not raise
+        _validate_response_data(sample_benchmark_data)
 
-        with pytest.raises(ValueError, match="Missing"):
-            quench.create_benchmark(invalid_data, 'test')
+    def test_validate_model_data_not_dict(self):
+        with pytest.raises(ValueError, match="must be a dict"):
+            _validate_model_data("not a dict", "bad_model")
 
-    def test_validate_mismatched_lengths(self, authenticated_state, mock_requests):
-        """Test validation catches mismatched array lengths"""
-        invalid_data = {
-            'model1': {
-                'subtask1': {
-                    'q1': {
-                        'question': 'test',
-                        'response': ['a', 'b'],
-                        'reasoning': ['r1'],  # Should have 2 items
-                        'response_score': [1.0, 0.8],
-                        'score': 0.9,
-                        'metadata': {}
-                    }
-                }
-            }
-        }
+    def test_validate_subtask_not_dict(self):
+        with pytest.raises(ValueError, match="must be a dict"):
+            _validate_model_data({"sub1": "not a dict"}, "model1")
 
-        quench = Quench()
 
-        with pytest.raises(ValueError, match="Mismatched array lengths"):
-            quench.create_benchmark(invalid_data, 'test')
+# ---------------------------------------------------------------------------
+# Error handling
+# ---------------------------------------------------------------------------
+
+class TestErrorHandling:
+
+    def test_rate_limit_error(self, mock_session):
+        mock_session.get.return_value = _make_response(
+            {"error": "Too many requests"}, status_code=429, ok=False
+        )
+        client = QuenchClient()
+        with pytest.raises(RateLimitError):
+            client.benchmarks.load("test")
+
+    def test_generic_api_error(self, mock_session):
+        mock_session.get.return_value = _make_response(
+            {"error": "Internal server error"}, status_code=500, ok=False
+        )
+        client = QuenchClient()
+        with pytest.raises(QuenchAPIError):
+            client.benchmarks.load("test")
+
+    def test_error_includes_message(self, mock_session):
+        mock_session.get.return_value = _make_response(
+            {"error": "Benchmark limit exceeded"}, status_code=400, ok=False
+        )
+        client = QuenchClient()
+        with pytest.raises(QuenchAPIError, match="Benchmark limit exceeded"):
+            client.benchmarks.load("test")
+
+
+# ---------------------------------------------------------------------------
+# Module-level API (quench.Benchmark.load)
+# ---------------------------------------------------------------------------
+
+class TestResponseUnwrapping:
+
+    def test_list_unwraps_benchmarks(self, mock_session):
+        mock_session.get.return_value = _make_response({
+            "benchmarks": [{"name": "b1"}, {"name": "b2"}],
+            "total": 2,
+        })
+        client = QuenchClient()
+        result = client.benchmarks.list()
+        assert isinstance(result, list)
+        assert len(result) == 2
+        assert result[0]["name"] == "b1"
+
+    def test_benchmark_categories_unwraps(self, mock_session):
+        mock_session.get.return_value = _make_response({
+            "categories": ["math", "coding", "safety"],
+        })
+        from quench.quench import benchmark_categories, _reset_default_client
+        _reset_default_client()
+        # Use explicit client
+        client = QuenchClient()
+        result = benchmark_categories(client=client)
+        assert isinstance(result, list)
+        assert "math" in result
+
+    def test_embedding_providers_returns_dict(self, mock_session):
+        mock_session.get.return_value = _make_response({
+            "providers": {"google": {}},
+            "default_provider": "google",
+            "default_model": "gemini-embedding-001",
+        })
+        from quench.quench import embedding_providers, _reset_default_client
+        _reset_default_client()
+        client = QuenchClient()
+        result = embedding_providers(client=client)
+        assert isinstance(result, dict)
+        assert "providers" in result
+
+
+# ---------------------------------------------------------------------------
+# Async creation and wait_until_ready
+# ---------------------------------------------------------------------------
+
+class TestAsyncCreation:
+
+    def test_wait_until_ready_immediate(self, mock_session, sample_benchmark_data):
+        """Benchmark already ready — should return immediately."""
+        client = QuenchClient()
+        bm = Benchmark(client, "test")
+        bm._data = sample_benchmark_data
+        bm._status = "ready"
+
+        result = bm.wait_until_ready(timeout=1)
+        assert result is bm
+
+    def test_wait_until_ready_polls(self, mock_session, sample_benchmark_data):
+        """Benchmark transitions from processing to ready."""
+        mock_session.get.side_effect = [
+            _make_response({"status": "processing"}),
+            _make_response({"status": "ready"}),
+        ]
+        client = QuenchClient()
+        bm = Benchmark(client, "test")
+        bm._data = sample_benchmark_data
+        bm._status = "processing"
+
+        result = bm.wait_until_ready(timeout=10, poll_interval=0)
+        assert result is bm
+        assert bm.status == "ready"
+
+    def test_wait_until_ready_failed(self, mock_session, sample_benchmark_data):
+        """Benchmark processing fails."""
+        mock_session.get.return_value = _make_response({"status": "failed"})
+
+        client = QuenchClient()
+        bm = Benchmark(client, "test")
+        bm._data = sample_benchmark_data
+        bm._status = "processing"
+
+        with pytest.raises(QuenchAPIError, match="processing failed"):
+            bm.wait_until_ready(timeout=10, poll_interval=0)
+
+
+# ---------------------------------------------------------------------------
+# Presigned upload
+# ---------------------------------------------------------------------------
+
+class TestPresignedUpload:
+
+    def test_small_data_uses_inline(self, mock_session, sample_benchmark_data):
+        """Small benchmarks go inline, not via R2."""
+        mock_session.post.side_effect = [
+            _make_response({"token": "jwt", "user_id": "u1"}),
+            _make_response({"benchmark_id": "b1", "status": "processing"}),
+        ]
+        client = QuenchClient(api_key="qk_test")
+        client.benchmarks.create("small", sample_benchmark_data)
+
+        # Should be 2 posts: login + create. No presign call.
+        assert mock_session.post.call_count == 2
+        # The create call should have benchmark_data in the payload
+        create_call = mock_session.post.call_args_list[1]
+        assert "benchmark_data" in create_call[1].get("json", {})
+
+    def test_large_data_uses_presigned(self, mock_session):
+        """Large benchmarks use presigned upload."""
+        # Build data > 50MB threshold
+        from quench.quench import _BenchmarkNamespace
+        original_threshold = _BenchmarkNamespace._LARGE_FILE_THRESHOLD
+
+        try:
+            # Temporarily lower threshold for testing
+            _BenchmarkNamespace._LARGE_FILE_THRESHOLD = 10  # 10 bytes
+
+            mock_session.post.side_effect = [
+                _make_response({"token": "jwt", "user_id": "u1"}),  # login
+                _make_response({"url": "https://r2.example.com/upload", "key": "uploads/test.json"}),  # presign
+                _make_response({"benchmark_id": "b1", "status": "processing"}),  # create
+            ]
+            mock_session.put.return_value = _make_response(None, text="")
+
+            data = {"m1": {"sub": {"q1": {"question": "x", "response": ["y"]}}}}
+            client = QuenchClient(api_key="qk_test")
+            bm = client.benchmarks.create("large", data)
+
+            # Should have: login, presign, create = 3 posts + 1 put
+            assert mock_session.post.call_count == 3
+            assert mock_session.put.call_count == 1
+
+            # Create call should have storage_key, not benchmark_data
+            create_call = mock_session.post.call_args_list[2]
+            payload = create_call[1].get("json", {})
+            assert "storage_key" in payload
+            assert "benchmark_data" not in payload
+        finally:
+            _BenchmarkNamespace._LARGE_FILE_THRESHOLD = original_threshold
+
+
+# ---------------------------------------------------------------------------
+# Module-level API (quench.Benchmark.load)
+# ---------------------------------------------------------------------------
+
+class TestModuleLevelAPI:
+
+    def test_module_level_load(self, mock_session, sample_benchmark_data, monkeypatch):
+        import quench
+        monkeypatch.setattr(quench, "api_key", None)
+
+        mock_session.get.return_value = _make_response({
+            "benchmark_data": sample_benchmark_data,
+            "metadata": {},
+        })
+
+        # Reset cached default client
+        from quench.quench import _reset_default_client
+        _reset_default_client()
+
+        bm = quench.Benchmark.load("public_bench")
+        assert bm.name == "public_bench"
+        assert "gpt4" in bm.models

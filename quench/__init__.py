@@ -1,39 +1,63 @@
 """
-Quench - Evaluation framework for generative models
+Quench - Predict benchmark scores from a fraction of the queries
 
-Quench provides a simple API for evaluating generative model responses
-against benchmarks stored on remote servers.
+Simple usage::
 
-Basic usage:
-    >>> from quench import login, Quench
-    >>> 
-    >>> # Authenticate
-    >>> login(api_key="your_api_key")
-    >>> 
-    >>> # Load a benchmark
-    >>> quench = Quench().load_benchmark('my_benchmark')
-    >>> 
-    >>> # Add a new model
-    >>> quench.add_model(model_responses)
-    >>> 
-    >>> # Evaluate
-    >>> results = quench.predict(metrics=['accuracy', 'consistency'])
+    import quench
+
+    quench.api_key = "qk_..."  # or set QUENCH_API_KEY env var
+
+    benchmark = quench.Benchmark.load("my-benchmark")
+    results = benchmark.predict({"new-model": {...}})
+
+Advanced (thread-safe) usage::
+
+    from quench import QuenchClient
+
+    client = QuenchClient(api_key="qk_...")
+    benchmark = client.benchmarks.load("my-benchmark")
 """
 
 from .quench import (
-    Quench,
-    login,
-    logout,
+    # Client
+    QuenchClient,
+    # Benchmark
+    Benchmark as _Benchmark,
+    _DefaultBenchmarkAccessor,
+    # Exceptions
+    QuenchAPIError,
     AuthenticationError,
-    BenchmarkNotFoundError
+    NotFoundError,
+    RateLimitError,
+    BenchmarkNotFoundError,
+    # Module-level helpers
+    embedding_providers,
+    benchmark_categories,
 )
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
+
+# Module-level configuration — set these before calling Benchmark.load()
+api_key = None  # type: Optional[str]
+"""Your Quench API key. Falls back to the ``QUENCH_API_KEY`` environment variable."""
+
+base_url = None  # type: Optional[str]
+"""Override the default API base URL."""
+
+# quench.Benchmark.load(...) / .create(...) / .list(...)
+Benchmark = _DefaultBenchmarkAccessor()
 
 __all__ = [
-    'Quench',
-    'login',
-    'logout',
-    'AuthenticationError',
-    'BenchmarkNotFoundError'
+    "__version__",
+    "api_key",
+    "base_url",
+    "Benchmark",
+    "QuenchClient",
+    "QuenchAPIError",
+    "AuthenticationError",
+    "NotFoundError",
+    "RateLimitError",
+    "BenchmarkNotFoundError",
+    "embedding_providers",
+    "benchmark_categories",
 ]
