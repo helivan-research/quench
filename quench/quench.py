@@ -370,6 +370,8 @@ class Benchmark:
         self._embeddings: Optional[Dict] = None
         self._status: Optional[str] = None
         self._benchmark_id: Optional[str] = None
+        self._queries: Optional[Dict] = None
+        self._model_scores: Optional[Dict] = None
 
     @classmethod
     def _from_api(cls, client: QuenchClient, name: str, api_data: Dict) -> "Benchmark":
@@ -378,6 +380,8 @@ class Benchmark:
         bm._metadata = api_data.get("metadata", {})
         bm._embeddings = api_data.get("embeddings", {})
         bm._status = api_data.get("status", "ready")
+        bm._queries = api_data.get("queries")
+        bm._model_scores = api_data.get("model_scores")
         num_models = len(bm.models)
         logger.info("Loaded benchmark '%s' with %d model(s)", name, num_models)
         return bm
@@ -394,9 +398,30 @@ class Benchmark:
     @property
     def models(self) -> List[str]:
         """List of model names in this benchmark."""
+        # New storage: stub has _models list
+        if self._data and "_models" in self._data:
+            return self._data["_models"]
+        # New storage: model_scores has model names
+        if self._model_scores:
+            return list(self._model_scores.keys())
+        # Legacy: model names are top-level keys
         if self._data is None:
             return []
         return [k for k in self._data if k != "metadata"]
+
+    @property
+    def scores(self) -> Dict[str, float]:
+        """Model scores dict. Available without loading full data."""
+        if self._model_scores:
+            return self._model_scores
+        # Fallback: extract from legacy data
+        if self._data:
+            return {
+                m: self._data[m].get("score", 0)
+                for m in self.models
+                if isinstance(self._data.get(m), dict) and "score" in self._data[m]
+            }
+        return {}
 
     @property
     def status(self) -> Optional[str]:
@@ -468,6 +493,17 @@ class Benchmark:
         Returns:
             Dict mapping query IDs to question strings.
         """
+        # New storage: queries stored separately as {subtask/qid: question}
+        if self._queries:
+            if subtask:
+                prefix = f"{subtask}/"
+                return {
+                    k[len(prefix):]: v for k, v in self._queries.items()
+                    if k.startswith(prefix)
+                }
+            return dict(self._queries)
+
+        # Legacy: extract from benchmark_data
         if self._data is None:
             raise ValueError("Benchmark data not loaded.")
 
@@ -476,6 +512,9 @@ class Benchmark:
             return {}
 
         reference = self._data[model_names[0]]
+        if not isinstance(reference, dict):
+            return {}
+
         query_dict: Dict[str, str] = {}
 
         if subtask:
