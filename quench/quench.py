@@ -302,6 +302,29 @@ class _BenchmarkNamespace:
             logger.info("Uploaded benchmark data to storage")
 
             payload["storage_key"] = storage_key
+
+            # Extract lightweight data client-side so the backend doesn't need
+            # to fetch the full file from R2 into memory
+            models = [k for k in data if k != "metadata"]
+            queries: Dict[str, str] = {}
+            model_scores: Dict[str, float] = {}
+            if models:
+                ref = data[models[0]]
+                for st_name, st_data in ref.items():
+                    if st_name in ("metadata", "score") or not isinstance(st_data, dict):
+                        continue
+                    for qid, qdata in st_data.items():
+                        if qid in ("metadata", "score", "query_score") or not isinstance(qdata, dict):
+                            continue
+                        q = qdata.get("question", "")
+                        if q:
+                            queries[f"{st_name}/{qid}"] = q
+                for m in models:
+                    md = data[m]
+                    if isinstance(md, dict) and "score" in md and not isinstance(md["score"], dict):
+                        model_scores[m] = float(md["score"])
+            payload["queries"] = queries
+            payload["model_scores"] = model_scores
         else:
             payload["benchmark_data"] = data
 
