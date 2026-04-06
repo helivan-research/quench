@@ -286,26 +286,31 @@ class _BenchmarkNamespace:
         payload["metadata"] = metadata
 
         if use_r2:
-            logger.info("Benchmark data is large (%.0f MB), using presigned upload",
-                        len(serialized) / 1024 / 1024)
-            presign_resp = self._client._post(
-                "/upload/presign",
-                json={"filename": f"{benchmark_name}.json", "content_type": "application/json"},
-                auth=True,
-            )
-            upload_url = presign_resp["upload_url"]
-            storage_key = presign_resp["storage_key"]
+            data_mb = len(serialized) / 1024 / 1024
+            logger.info("Benchmark data is large (%.0f MB), uploading per-model to R2", data_mb)
 
-            # Scale timeout with payload size (~2s per MB, minimum 120s)
-            upload_timeout = max(LONG_TIMEOUT, len(serialized) // (1024 * 1024) * 2)
-            self._client._put_raw(upload_url, serialized.encode(), content_type="application/json", timeout=upload_timeout)
-            logger.info("Uploaded benchmark data to storage")
-
-            payload["storage_key"] = storage_key
-
-            # Extract lightweight data client-side so the backend doesn't need
-            # to fetch the full file from R2 into memory
             models = [k for k in data if k != "metadata"]
+
+            # Upload each model's data as a separate R2 object
+            model_keys: Dict[str, str] = {}
+            for i, model_name in enumerate(models):
+                model_json = json.dumps(data[model_name])
+                presign_resp = self._client._post(
+                    "/upload/presign",
+                    json={"filename": f"{benchmark_name}/{model_name}.json", "content_type": "application/json"},
+                    auth=True,
+                )
+                upload_url = presign_resp["upload_url"]
+                model_key = presign_resp["storage_key"]
+                upload_timeout = max(LONG_TIMEOUT, len(model_json) // (1024 * 1024) * 2)
+                self._client._put_raw(upload_url, model_json.encode(), content_type="application/json", timeout=upload_timeout)
+                model_keys[model_name] = model_key
+                if (i + 1) % 10 == 0 or i == len(models) - 1:
+                    logger.info("Uploaded %d/%d models to R2", i + 1, len(models))
+
+            payload["model_storage_keys"] = model_keys
+
+            # Extract lightweight data client-side
             queries: Dict[str, str] = {}
             model_scores: Dict[str, float] = {}
             if models:
