@@ -9,7 +9,7 @@ Quench uses behavioral similarity to predict how a model will perform on an enti
 
 ## What is a "Model"?
 
-In Quench, a "model" is any configuration that produces responses to queries. This includes:
+In Quench, a "model" is any configuration that produces responses to queries:
 
 - **Different LLMs** (GPT-4, Claude, Llama, etc.)
 - **Different prompts** (system prompts, few-shot examples, instructions)
@@ -46,62 +46,57 @@ quench.api_key = "qk_your_key_here"
 # export QUENCH_API_KEY="qk_your_key_here"
 ```
 
-### 3. Create a Benchmark (Optional)
-
-If you have responses from multiple models to a shared set of queries:
+### 3. Load a Benchmark
 
 ```python
-benchmark_data = {
-    "gpt4_temp0": {
-        "reasoning": {
-            "q1": {"question": "What is 15% of 80?", "response": ["12"], "score": 1.0},
-            "q2": {"question": "If x + 5 = 12, what is x?", "response": ["7"], "score": 1.0},
-        },
-        "score": 0.92,
-    },
-    "claude_with_cot": {
-        "reasoning": {
-            "q1": {"question": "What is 15% of 80?", "response": ["Let me think... 12"], "score": 1.0},
-            "q2": {"question": "If x + 5 = 12, what is x?", "response": ["x = 7"], "score": 1.0},
-        },
-        "score": 0.95,
-    },
-}
+benchmark = quench.Benchmark.load("jailbreak-safety-v1")
 
-benchmark = quench.Benchmark.create("my-math-benchmark", benchmark_data)
+print(f"Models: {len(benchmark.models)}")
+print(f"Scores: {benchmark.scores}")
 ```
 
-Or use one of the public benchmarks (HELM, etc.) already available.
+### 4. Get Optimal Queries
 
-### 4. Predict Scores for a New Model
-
-Evaluate a new configuration on just a subset of queries and predict its full score:
+Not all queries are equally informative. Quench identifies which queries best differentiate between models:
 
 ```python
-# Load your benchmark (or a public one)
-benchmark = quench.Benchmark.load("my-math-benchmark")
-
-# Get the most informative queries to evaluate
 optimal = benchmark.get_optimal_queries(budget=20)
 print(f"Evaluate these {len(optimal['queries'])} queries:")
 for q in optimal["queries"]:
-    print(f"  {q['subtask']}/{q['query_id']}: {q['question']}")
+    print(f"  {q['subtask']}/{q['query_id']}")
+```
 
-# After running your new model on those queries...
-new_model_responses = {
-    "llama_finetuned": {
-        "reasoning": {
-            "q1": {"question": "What is 15% of 80?", "response": ["12"]},
-            "q2": {"question": "If x + 5 = 12, what is x?", "response": ["7"]},
+### 5. Stage a Prediction
+
+Before running your model, stage the prediction to preload cached model embeddings. This makes the actual prediction instant:
+
+```python
+query_ids = [(q["subtask"], q["query_id"]) for q in optimal["queries"]]
+session = benchmark.stage(query_ids)
+```
+
+### 6. Predict
+
+After running your model on those queries:
+
+```python
+results = benchmark.predict(
+    {
+        "my-model": {
+            "subtask_name": {
+                "query_id": {
+                    "question": "...",
+                    "response": ["model's response here"],
+                }
+            }
         }
-    }
-}
+    },
+    session=session,  # Uses pre-staged embeddings — prediction completes in ~2s
+)
 
-results = benchmark.predict(new_model_responses)
-
-print(f"Predicted score: {results['predicted_scores']['llama_finetuned']:.3f}")
-print(f"Confidence interval: {results['confidence_interval']['llama_finetuned']}")
-print(f"Most similar to: {results['similar_models'][0]['name']}")
+print(f"Predicted score: {results['predicted_scores']['my-model']:.3f}")
+print(f"Confidence interval: {results['confidence_interval']['my-model']}")
+print(f"Most similar to: {results['similar_models']['my-model'][0]['model']}")
 ```
 
 ## Core Concepts
@@ -112,7 +107,7 @@ A benchmark is a collection of queries organized into subtasks, with responses f
 
 ### Optimal Query Selection
 
-Not all queries are equally informative. Quench identifies which queries best differentiate between models, so you can evaluate the most valuable ones first.
+Quench identifies which queries best differentiate between models using leave-one-out cross-validation, so you can evaluate the most valuable ones first.
 
 ```python
 # Get the 15 most informative queries
@@ -123,12 +118,24 @@ budget = benchmark.estimate_query_budget(target_error=0.05)
 print(f"Need ~{budget['estimated_queries']} queries for 5% prediction error")
 ```
 
+### Staged Prediction
+
+For large benchmarks (80+ models), prediction requires comparing your model to every cached model. Staging preloads the necessary embeddings so the prediction itself is instant:
+
+```python
+session = benchmark.stage(query_ids)         # ~60-90s (preloads embeddings)
+results = benchmark.predict(data, session=session)  # ~2s (uses preloaded data)
+```
+
+Without staging, prediction still works but may take longer.
+
 ### Prediction
 
 Given partial responses (a model's answers to a subset of queries), Quench:
-1. Computes behavioral similarity to cached models
-2. Uses this similarity to predict performance on unseen queries
-3. Returns a predicted overall score with confidence intervals
+1. Embeds the new model's responses
+2. Computes behavioral similarity to cached models via embedding distances
+3. Applies classical MDS to get low-dimensional model representations
+4. Trains Ridge regression on MDS coordinates to predict the overall benchmark score
 
 ## API Reference
 
@@ -153,7 +160,15 @@ benchmark = client.benchmarks.load("my-benchmark")
 benchmark = quench.Benchmark.load("benchmark_name")
 
 # Create a new benchmark
-benchmark = quench.Benchmark.create("new_name", data)
+benchmark = quench.Benchmark.create("new_name", data,
+    embedding_model="openai/text-embedding-3-small",
+    category="safety")
+
+# Wait for processing (embeddings computed asynchronously)
+benchmark.wait_until_ready(
+    timeout=600,
+    on_progress=lambda progress, pct: print(f"Processing: {progress} ({pct}%)")
+)
 
 # List public benchmarks
 benchmarks = quench.Benchmark.list(category="math")
@@ -179,11 +194,15 @@ benchmark.remove_model("model_name")
 ### Prediction & Query Selection
 
 ```python
-# Predict scores for partial responses
-results = benchmark.predict(partial_responses)
-
 # Get optimal queries for a budget
 optimal = benchmark.get_optimal_queries(budget=20)
+
+# Stage for fast prediction
+query_ids = [(q["subtask"], q["query_id"]) for q in optimal["queries"]]
+session = benchmark.stage(query_ids)
+
+# Predict scores
+results = benchmark.predict(partial_responses, session=session)
 
 # Estimate queries needed for target error
 budget = benchmark.estimate_query_budget(target_error=0.05)
@@ -192,12 +211,15 @@ budget = benchmark.estimate_query_budget(target_error=0.05)
 ### Inspection
 
 ```python
-benchmark.models                              # List of model names
-benchmark.summary()                           # Lightweight scores
-benchmark.visualize()                         # Interactive MDS visualization HTML
-benchmark.get_query_dictionary()              # {subtask/query_id: question}
+benchmark.models                                # List of model names
+benchmark.scores                                # {model: score} dict
+benchmark.status                                # "processing", "ready", "failed"
+benchmark.progress                              # Processing progress (when processing)
+benchmark.summary()                             # Lightweight model summaries
+benchmark.visualize()                           # Interactive MDS visualization HTML
+benchmark.get_query_dictionary()                # {subtask/query_id: question}
 benchmark.get_query_dictionary(subtask="math")  # {query_id: question}
-benchmark.get_model_metadata("gpt4")          # Model metadata dict
+benchmark.get_model_metadata("gpt4")            # Model metadata dict
 ```
 
 ### Utilities
@@ -206,17 +228,6 @@ benchmark.get_model_metadata("gpt4")          # Model metadata dict
 quench.embedding_providers()    # Available embedding models
 quench.benchmark_categories()   # Available categories
 ```
-
-## Embedding Providers
-
-When creating a benchmark, Quench computes embeddings to measure behavioral similarity between models. The platform provides API keys — you just choose a provider and model.
-
-| Provider | Model | Dimensions | Max Tokens |
-|----------|-------|------------|------------|
-| **google** (default) | `gemini-embedding-001` | 3072 | 2048 |
-| openai | `text-embedding-3-small` | 1536 | 8191 |
-| openai | `text-embedding-3-large` | 3072 | 8191 |
-| openai | `text-embedding-ada-002` | 1536 | 8191 |
 
 ## Data Format
 
@@ -243,42 +254,55 @@ When creating a benchmark, Quench computes embeddings to measure behavioral simi
 {
     "predicted_scores": {"model_name": 0.87},
     "confidence_interval": {"model_name": [0.82, 0.92]},
-    "similar_models": [
-        {"name": "gpt4", "similarity": 0.95, "score": 0.92},
-    ],
+    "similar_models": {
+        "model_name": [
+            {"model": "gpt4", "similarity": 0.95, "distance": 1.2},
+        ]
+    },
     "overlap_info": {
-        "queries_evaluated": 20,
-        "total_queries": 500,
+        "query_count": 20,
+        "total_benchmark_queries": 500,
         "coverage": 0.04
-    }
+    },
+    "mds_coordinates": {"model_name": [0.1, -0.3], ...}
 }
 ```
 
-## Example: Comparing Prompt Variants
+## Example: Full Workflow
 
 ```python
 import quench
 
 quench.api_key = "qk_..."
 
-# You have a benchmark with various prompting strategies
-benchmark = quench.Benchmark.load("prompt-comparison")
+# Load benchmark
+benchmark = quench.Benchmark.load("jailbreak-safety-v1")
+print(f"{len(benchmark.models)} models, {len(benchmark.get_query_dictionary())} queries")
 
-# Test a new prompt variant on just 25 queries
-optimal = benchmark.get_optimal_queries(budget=25)
+# Get optimal queries
+optimal = benchmark.get_optimal_queries(budget=20)
+query_ids = [(q["subtask"], q["query_id"]) for q in optimal["queries"]]
+queries = benchmark.get_query_dictionary()
 
-# Run your new prompt on those queries and collect responses...
-new_prompt_responses = {
-    "cot_v2_with_examples": {
-        "math": {
-            "q42": {"question": "...", "response": ["..."]},
-            # ... 24 more queries
-        }
+# Stage prediction
+session = benchmark.stage(query_ids)
+
+# Run your model on the optimal queries
+responses = {}
+for subtask, qid in query_ids:
+    key = f"{subtask}/{qid}"
+    question = queries.get(key, "")
+    answer = my_model(question)  # Your model here
+    if subtask not in responses:
+        responses[subtask] = {}
+    responses[subtask][qid] = {
+        "question": question,
+        "response": [answer],
     }
-}
 
-results = benchmark.predict(new_prompt_responses)
-print(f"Predicted score: {results['predicted_scores']['cot_v2_with_examples']:.1%}")
+# Predict
+results = benchmark.predict({"my-model": responses}, session=session)
+print(f"Predicted score: {results['predicted_scores']['my-model']:.1%}")
 ```
 
 ## Feedback & Support
