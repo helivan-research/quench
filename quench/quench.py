@@ -458,7 +458,7 @@ class Benchmark:
 
     # -- lifecycle ----------------------------------------------------------
 
-    def wait_until_ready(self, timeout: int = 300, poll_interval: int = 5) -> "Benchmark":
+    def wait_until_ready(self, timeout: int = 300, poll_interval: int = 5, on_progress: Any = None) -> "Benchmark":
         """Block until the benchmark is done processing.
 
         After :meth:`create`, the backend computes embeddings asynchronously.
@@ -467,6 +467,7 @@ class Benchmark:
         Args:
             timeout: Max seconds to wait (default 300).
             poll_interval: Seconds between status checks (default 5).
+            on_progress: Optional callback ``fn(progress_str, pct)`` called on each poll.
 
         Returns:
             self
@@ -482,16 +483,41 @@ class Benchmark:
         while time.monotonic() < deadline:
             resp = self._client._get(f"/benchmarks/{self.name}/summary")
             status = resp.get("status", "ready")
+            metadata = resp.get("metadata", {})
+
+            if on_progress:
+                progress = metadata.get("embedding_progress", "")
+                pct = metadata.get("embedding_pct", 0)
+                if progress:
+                    on_progress(progress, pct)
+
             if status == "ready":
                 self._status = "ready"
                 logger.info("Benchmark '%s' is ready", self.name)
                 return self
             if status == "failed":
-                raise QuenchAPIError(f"Benchmark '{self.name}' processing failed")
+                error = metadata.get("processing_error", "unknown error")
+                raise QuenchAPIError(f"Benchmark '{self.name}' processing failed: {error}")
             logger.debug("Benchmark '%s' still processing...", self.name)
             time.sleep(poll_interval)
 
         raise TimeoutError(f"Benchmark '{self.name}' not ready after {timeout}s")
+
+    @property
+    def progress(self) -> Optional[Dict]:
+        """Get current processing progress. Returns None if not processing."""
+        if self._status != "processing":
+            return None
+        try:
+            resp = self._client._get(f"/benchmarks/{self.name}/summary")
+            metadata = resp.get("metadata", {})
+            return {
+                "status": resp.get("status"),
+                "progress": metadata.get("embedding_progress"),
+                "pct": metadata.get("embedding_pct"),
+            }
+        except Exception:
+            return None
 
     # -- read operations ----------------------------------------------------
 
@@ -653,12 +679,41 @@ class Benchmark:
 
     # -- prediction & query selection ---------------------------------------
 
-    def predict(self, response_json: Dict) -> Dict:
-        """Predict benchmark scores for a partially-evaluated model.
+    def stage(self, query_ids: List) -> Dict:
+        """Stage a prediction by preloading cached model embeddings.
 
-        When the benchmark was loaded from the server, this uses the
-        stored-benchmark endpoint (``POST /benchmarks/{name}/predict``)
-        which leverages precomputed embeddings for speed.
+        Call this before :meth:`predict` to make prediction instant (~2s
+        instead of ~90s). The returned dict contains a ``session_id``
+        that must be passed to :meth:`predict`.
+
+        Args:
+            query_ids: List of ``(subtask, query_id)`` tuples or
+                ``[subtask, query_id]`` lists specifying which queries
+                to stage.
+
+        Returns:
+            Dict with ``session_id``, ``query_count``, ``model_count``,
+            ``expires_in``.
+
+        Example::
+
+            optimal = benchmark.get_optimal_queries(budget=20)
+            query_ids = [(q["subtask"], q["query_id"]) for q in optimal["queries"]]
+            session = benchmark.stage(query_ids)
+            # ... run model on those queries ...
+            results = benchmark.predict(responses, session=session)
+        """
+        result = self._client._post(
+            f"/benchmarks/{self.name}/stage",
+            json={"query_ids": [list(q) for q in query_ids]},
+            timeout=LONG_TIMEOUT,
+        )
+        logger.info("Staged %d queries for benchmark '%s' (session=%s)",
+                     result.get("query_count", 0), self.name, result.get("session_id"))
+        return result
+
+    def predict(self, response_json: Dict, session: Optional[Dict] = None) -> Dict:
+        """Predict benchmark scores for a partially-evaluated model.
 
         Args:
             response_json: Model responses (can be partial). Format::
@@ -674,6 +729,10 @@ class Benchmark:
                     }
                 }
 
+            session: Optional staged session dict (from :meth:`stage`).
+                When provided, prediction uses preloaded embeddings
+                and completes in ~2s instead of ~90s.
+
         Returns:
             Dict with ``predicted_scores``, ``confidence_interval``,
             ``similar_models``, ``cached_model_scores``, ``overlap_info``,
@@ -682,10 +741,11 @@ class Benchmark:
         if self._data is None:
             raise ValueError("No benchmark data loaded. Load a benchmark first.")
 
-        # Use the stored-benchmark endpoint when the benchmark exists on the
-        # server — it uses precomputed embeddings and is much faster.
+        # Use the stored-benchmark endpoint
         if self.name and self._status == "ready":
             payload = {"new_model_data": response_json}
+            if session and "session_id" in session:
+                payload["session_id"] = session["session_id"]
             result = self._client._post(
                 f"/benchmarks/{self.name}/predict",
                 json=payload,
@@ -699,8 +759,7 @@ class Benchmark:
             }
             result = self._client._post("/evaluate/predict", json=payload, timeout=LONG_TIMEOUT)
 
-        # Normalize: backend returns "predicted_score" (singular) on success
-        # but "predicted_scores" (plural) on error paths. Unify to plural.
+        # Normalize predicted_score → predicted_scores
         if "predicted_score" in result and "predicted_scores" not in result:
             result["predicted_scores"] = result.pop("predicted_score")
 

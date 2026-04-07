@@ -543,7 +543,8 @@ class TestPresignedUpload:
 
             mock_session.post.side_effect = [
                 _make_response({"token": "jwt", "user_id": "u1"}),  # login
-                _make_response({"upload_url": "https://r2.example.com/upload", "storage_key": "uploads/test.json", "expires_in": 3600}),  # presign
+                # One presign per model (1 model in this data)
+                _make_response({"upload_url": "https://r2.example.com/upload", "storage_key": "uploads/m1.json", "expires_in": 3600}),
                 _make_response({"benchmark_id": "b1", "status": "processing"}),  # create
             ]
             mock_session.put.return_value = _make_response(None, text="")
@@ -552,14 +553,14 @@ class TestPresignedUpload:
             client = QuenchClient(api_key="qk_test")
             bm = client.benchmarks.create("large", data)
 
-            # Should have: login, presign, create = 3 posts + 1 put
+            # Should have: login, 1 presign, create = 3 posts + 1 put
             assert mock_session.post.call_count == 3
             assert mock_session.put.call_count == 1
 
-            # Create call should have storage_key, not benchmark_data
+            # Create call should have model_storage_keys, not benchmark_data
             create_call = mock_session.post.call_args_list[2]
             payload = create_call[1].get("json", {})
-            assert "storage_key" in payload
+            assert "model_storage_keys" in payload
             assert "benchmark_data" not in payload
         finally:
             _BenchmarkNamespace._LARGE_FILE_THRESHOLD = original_threshold
