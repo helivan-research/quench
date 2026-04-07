@@ -5,7 +5,6 @@ Predict benchmark scores from a fraction of the queries.
 Quench uses behavioral similarity to predict how a model will perform on an entire benchmark after evaluating only a small subset of queries. This dramatically reduces evaluation costs while maintaining accurate predictions.
 
 **Web App:** https://quench.helivan.io
-**API:** https://quench.helivan.io/api
 
 ## What is a "Model"?
 
@@ -46,16 +45,29 @@ quench.api_key = "qk_your_key_here"
 # export QUENCH_API_KEY="qk_your_key_here"
 ```
 
-### 3. Load a Benchmark
+### 3. Browse Available Benchmarks
+
+```python
+# List public benchmarks
+benchmarks = quench.Benchmark.list()
+for b in benchmarks:
+    print(f"  {b['name']:40s} category={b.get('metadata', {}).get('category', '?')}")
+
+# Filter by category
+safety_benchmarks = quench.Benchmark.list(category="safety")
+```
+
+### 4. Load a Benchmark
 
 ```python
 benchmark = quench.Benchmark.load("jailbreak-safety-v1")
 
 print(f"Models: {len(benchmark.models)}")
+print(f"Queries: {len(benchmark.get_query_dictionary())}")
 print(f"Scores: {benchmark.scores}")
 ```
 
-### 4. Get Optimal Queries
+### 5. Get Optimal Queries
 
 Not all queries are equally informative. Quench identifies which queries best differentiate between models:
 
@@ -66,20 +78,16 @@ for q in optimal["queries"]:
     print(f"  {q['subtask']}/{q['query_id']}")
 ```
 
-### 5. Stage a Prediction
+### 6. Stage & Predict
 
-Before running your model, stage the prediction to preload cached model embeddings. This makes the actual prediction instant:
+Stage the prediction to preload cached model embeddings, then predict after running your model:
 
 ```python
+# Stage
 query_ids = [(q["subtask"], q["query_id"]) for q in optimal["queries"]]
 session = benchmark.stage(query_ids)
-```
 
-### 6. Predict
-
-After running your model on those queries:
-
-```python
+# Run your model on those queries, then predict
 results = benchmark.predict(
     {
         "my-model": {
@@ -91,7 +99,7 @@ results = benchmark.predict(
             }
         }
     },
-    session=session,  # Uses pre-staged embeddings — prediction completes in ~2s
+    session=session,
 )
 
 print(f"Predicted score: {results['predicted_scores']['my-model']:.3f}")
@@ -120,11 +128,11 @@ print(f"Need ~{budget['estimated_queries']} queries for 5% prediction error")
 
 ### Staged Prediction
 
-For large benchmarks (80+ models), prediction requires comparing your model to every cached model. Staging preloads the necessary embeddings so the prediction itself is instant:
+For large benchmarks (80+ models), staging preloads the necessary embeddings so the prediction itself is instant:
 
 ```python
-session = benchmark.stage(query_ids)         # ~60-90s (preloads embeddings)
-results = benchmark.predict(data, session=session)  # ~2s (uses preloaded data)
+session = benchmark.stage(query_ids)                    # Preloads embeddings
+results = benchmark.predict(data, session=session)      # ~2s
 ```
 
 Without staging, prediction still works but may take longer.
@@ -136,6 +144,65 @@ Given partial responses (a model's answers to a subset of queries), Quench:
 2. Computes behavioral similarity to cached models via embedding distances
 3. Applies classical MDS to get low-dimensional model representations
 4. Trains Ridge regression on MDS coordinates to predict the overall benchmark score
+
+## Example: Full Workflow
+
+```python
+import quench
+
+quench.api_key = "qk_..."
+
+# Load benchmark
+benchmark = quench.Benchmark.load("jailbreak-safety-v1")
+print(f"{len(benchmark.models)} models, {len(benchmark.get_query_dictionary())} queries")
+
+# Get optimal queries
+optimal = benchmark.get_optimal_queries(budget=20)
+query_ids = [(q["subtask"], q["query_id"]) for q in optimal["queries"]]
+queries = benchmark.get_query_dictionary()
+
+# Stage prediction
+session = benchmark.stage(query_ids)
+
+# Run your model on the optimal queries
+responses = {}
+for subtask, qid in query_ids:
+    key = f"{subtask}/{qid}"
+    question = queries.get(key, "")
+    answer = my_model(question)  # Your model here
+    if subtask not in responses:
+        responses[subtask] = {}
+    responses[subtask][qid] = {
+        "question": question,
+        "response": [answer],
+    }
+
+# Predict
+results = benchmark.predict({"my-model": responses}, session=session)
+print(f"Predicted score: {results['predicted_scores']['my-model']:.1%}")
+print(f"95% CI: {results['confidence_interval']['my-model']}")
+print(f"Similar models: {[m['model'] for m in results['similar_models']['my-model']]}")
+```
+
+### Prediction Response
+
+```python
+{
+    "predicted_scores": {"my-model": 0.87},
+    "confidence_interval": {"my-model": [0.82, 0.92]},
+    "similar_models": {
+        "my-model": [
+            {"model": "gpt4", "similarity": 0.95, "distance": 1.2},
+        ]
+    },
+    "overlap_info": {
+        "query_count": 20,
+        "total_benchmark_queries": 500,
+        "coverage": 0.04
+    },
+    "mds_coordinates": {"my-model": [0.1, -0.3], ...}
+}
+```
 
 ## API Reference
 
@@ -246,63 +313,6 @@ quench.benchmark_categories()   # Available categories
         "score": float  # Optional: overall score for this model
     }
 }
-```
-
-### Prediction Response
-
-```python
-{
-    "predicted_scores": {"model_name": 0.87},
-    "confidence_interval": {"model_name": [0.82, 0.92]},
-    "similar_models": {
-        "model_name": [
-            {"model": "gpt4", "similarity": 0.95, "distance": 1.2},
-        ]
-    },
-    "overlap_info": {
-        "query_count": 20,
-        "total_benchmark_queries": 500,
-        "coverage": 0.04
-    },
-    "mds_coordinates": {"model_name": [0.1, -0.3], ...}
-}
-```
-
-## Example: Full Workflow
-
-```python
-import quench
-
-quench.api_key = "qk_..."
-
-# Load benchmark
-benchmark = quench.Benchmark.load("jailbreak-safety-v1")
-print(f"{len(benchmark.models)} models, {len(benchmark.get_query_dictionary())} queries")
-
-# Get optimal queries
-optimal = benchmark.get_optimal_queries(budget=20)
-query_ids = [(q["subtask"], q["query_id"]) for q in optimal["queries"]]
-queries = benchmark.get_query_dictionary()
-
-# Stage prediction
-session = benchmark.stage(query_ids)
-
-# Run your model on the optimal queries
-responses = {}
-for subtask, qid in query_ids:
-    key = f"{subtask}/{qid}"
-    question = queries.get(key, "")
-    answer = my_model(question)  # Your model here
-    if subtask not in responses:
-        responses[subtask] = {}
-    responses[subtask][qid] = {
-        "question": question,
-        "response": [answer],
-    }
-
-# Predict
-results = benchmark.predict({"my-model": responses}, session=session)
-print(f"Predicted score: {results['predicted_scores']['my-model']:.1%}")
 ```
 
 ## Feedback & Support
