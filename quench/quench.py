@@ -238,9 +238,9 @@ class _BenchmarkNamespace:
 
         return Benchmark._from_api(self._client, benchmark_name, data)
 
-    # 10 MB threshold for switching to presigned R2 upload
-    # (Railway's proxy times out on larger inline payloads)
-    _LARGE_FILE_THRESHOLD = 10 * 1024 * 1024
+    # Always use per-model R2 upload when R2 is configured.
+    # Set to 0 to force R2 for all benchmarks.
+    _LARGE_FILE_THRESHOLD = 0
 
     def create(
         self,

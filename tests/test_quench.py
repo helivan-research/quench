@@ -125,11 +125,13 @@ class TestBenchmarkCreate:
         )
 
     def test_create_success(self, mock_session, sample_benchmark_data):
-        # First call = auth login, second = create
+        # With threshold=0, all creates go through R2 (1 presign per model + create)
         mock_session.post.side_effect = [
-            _make_response({"token": "jwt_abc", "user_id": "u1"}),
-            _make_response({"benchmark_id": "bench_123", "status": "processing", "metadata": {}}),
+            _make_response({"token": "jwt_abc", "user_id": "u1"}),  # login
+            _make_response({"upload_url": "https://r2/upload", "storage_key": "uploads/gpt4.json", "expires_in": 3600}),  # presign for gpt4
+            _make_response({"benchmark_id": "bench_123", "status": "processing", "metadata": {}}),  # create
         ]
+        mock_session.put.return_value = _make_response(None, text="")
         client = QuenchClient(api_key="qk_test")
         bm = client.benchmarks.create("new_bench", sample_benchmark_data)
 
@@ -516,20 +518,25 @@ class TestAsyncCreation:
 
 class TestPresignedUpload:
 
-    def test_small_data_uses_inline(self, mock_session, sample_benchmark_data):
-        """Small benchmarks go inline, not via R2."""
+    def test_all_data_uses_r2(self, mock_session, sample_benchmark_data):
+        """All benchmarks use per-model R2 upload (threshold=0)."""
         mock_session.post.side_effect = [
             _make_response({"token": "jwt", "user_id": "u1"}),
+            _make_response({"upload_url": "https://r2/upload", "storage_key": "uploads/gpt4.json", "expires_in": 3600}),
             _make_response({"benchmark_id": "b1", "status": "processing"}),
         ]
+        mock_session.put.return_value = _make_response(None, text="")
         client = QuenchClient(api_key="qk_test")
         client.benchmarks.create("small", sample_benchmark_data)
 
-        # Should be 2 posts: login + create. No presign call.
-        assert mock_session.post.call_count == 2
-        # The create call should have benchmark_data in the payload
-        create_call = mock_session.post.call_args_list[1]
-        assert "benchmark_data" in create_call[1].get("json", {})
+        # Should have: login + presign + create = 3 posts, 1 put
+        assert mock_session.post.call_count == 3
+        assert mock_session.put.call_count == 1
+        # Create call should have model_storage_keys, not benchmark_data
+        create_call = mock_session.post.call_args_list[2]
+        payload = create_call[1].get("json", {})
+        assert "model_storage_keys" in payload
+        assert "benchmark_data" not in payload
 
     def test_large_data_uses_presigned(self, mock_session):
         """Large benchmarks use presigned upload."""
