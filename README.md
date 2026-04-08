@@ -78,29 +78,23 @@ for q in optimal["queries"]:
     print(f"  {q['subtask']}/{q['query_id']}")
 ```
 
-### 6. Stage & Predict
+### 6. Predict
 
-Stage the prediction to preload cached model embeddings, then predict after running your model:
+Run your model on the optimal queries, then predict:
 
 ```python
-# Stage
-query_ids = [(q["subtask"], q["query_id"]) for q in optimal["queries"]]
-session = benchmark.stage(query_ids)
+# Run your model on the optimal queries
+responses = {}
+for q in optimal["queries"]:
+    st, qid = q["subtask"], q["query_id"]
+    answer = my_model(q["question"])  # your model here
+    responses.setdefault(st, {})[qid] = {
+        "question": q["question"],
+        "response": [answer],
+    }
 
-# Run your model on those queries, then predict
-results = benchmark.predict(
-    {
-        "my-model": {
-            "subtask_name": {
-                "query_id": {
-                    "question": "...",
-                    "response": ["model's response here"],
-                }
-            }
-        }
-    },
-    session=session,
-)
+# Predict (~7s)
+results = benchmark.predict({"my-model": responses})
 
 print(f"Predicted score: {results['predicted_scores']['my-model']:.3f}")
 print(f"Confidence interval: {results['confidence_interval']['my-model']}")
@@ -126,16 +120,20 @@ budget = benchmark.estimate_query_budget(target_error=0.05)
 print(f"Need ~{budget['estimated_queries']} queries for 5% prediction error")
 ```
 
-### Staged Prediction
+### Fast Prediction
 
-For large benchmarks (80+ models), staging preloads the necessary embeddings so the prediction itself is instant:
+Quench keeps optimal query embeddings warm in memory. When you predict using the optimal query set, predictions complete in ~7 seconds with no setup needed:
 
 ```python
-session = benchmark.stage(query_ids)                    # Preloads embeddings
-results = benchmark.predict(data, session=session)      # ~2s
+results = benchmark.predict({"my-model": responses})  # ~7s
 ```
 
-Without staging, prediction still works but may take longer.
+For custom query sets outside the optimal set, you can explicitly stage:
+
+```python
+session = benchmark.stage(custom_query_ids)                 # Preloads embeddings
+results = benchmark.predict(data, session=session)          # ~7s
+```
 
 ### Prediction
 
@@ -158,27 +156,19 @@ print(f"{len(benchmark.models)} models, {len(benchmark.get_query_dictionary())} 
 
 # Get optimal queries
 optimal = benchmark.get_optimal_queries(budget=20)
-query_ids = [(q["subtask"], q["query_id"]) for q in optimal["queries"]]
-queries = benchmark.get_query_dictionary()
-
-# Stage prediction
-session = benchmark.stage(query_ids)
 
 # Run your model on the optimal queries
 responses = {}
-for subtask, qid in query_ids:
-    key = f"{subtask}/{qid}"
-    question = queries.get(key, "")
-    answer = my_model(question)  # Your model here
-    if subtask not in responses:
-        responses[subtask] = {}
-    responses[subtask][qid] = {
-        "question": question,
+for q in optimal["queries"]:
+    st, qid = q["subtask"], q["query_id"]
+    answer = my_model(q["question"])  # Your model here
+    responses.setdefault(st, {})[qid] = {
+        "question": q["question"],
         "response": [answer],
     }
 
-# Predict
-results = benchmark.predict({"my-model": responses}, session=session)
+# Predict (~7s)
+results = benchmark.predict({"my-model": responses})
 print(f"Predicted score: {results['predicted_scores']['my-model']:.1%}")
 print(f"95% CI: {results['confidence_interval']['my-model']}")
 print(f"Similar models: {[m['model'] for m in results['similar_models']['my-model']]}")
@@ -264,12 +254,12 @@ benchmark.remove_model("model_name")
 # Get optimal queries for a budget
 optimal = benchmark.get_optimal_queries(budget=20)
 
-# Stage for fast prediction
-query_ids = [(q["subtask"], q["query_id"]) for q in optimal["queries"]]
-session = benchmark.stage(query_ids)
+# Predict scores (~7s with optimal queries)
+results = benchmark.predict({"my-model": responses})
 
-# Predict scores
-results = benchmark.predict(partial_responses, session=session)
+# For custom query sets, stage first
+session = benchmark.stage(custom_query_ids)
+results = benchmark.predict({"my-model": responses}, session=session)
 
 # Estimate queries needed for target error
 budget = benchmark.estimate_query_budget(target_error=0.05)
