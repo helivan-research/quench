@@ -815,11 +815,48 @@ class Benchmark:
 # ---------------------------------------------------------------------------
 
 def _validate_response_data(data: Dict) -> None:
-    """Validate that a full response dict follows the expected schema."""
+    """Validate that a full response dict follows the expected schema.
+
+    Also checks data quality: removes models with no embeddable responses
+    (empty strings, all-null, etc.) and logs warnings.
+    """
+    models_to_remove = []
     for model_name, model_data in data.items():
         if model_name == "metadata":
             continue
-        _validate_model_data(model_data, model_name)
+        try:
+            _validate_model_data(model_data, model_name)
+        except ValueError:
+            raise
+
+        # Check data quality: at least one non-empty response
+        has_response = False
+        for st_name, st_data in model_data.items():
+            if st_name in ("metadata", "score") or not isinstance(st_data, dict):
+                continue
+            for qid, qdata in st_data.items():
+                if qid in ("query_score", "score", "metadata") or not isinstance(qdata, dict):
+                    continue
+                responses = qdata.get("response", [])
+                for r in responses:
+                    if r and isinstance(r, str) and r.strip():
+                        has_response = True
+                        break
+                if has_response:
+                    break
+            if has_response:
+                break
+
+        if not has_response:
+            models_to_remove.append(model_name)
+
+    if models_to_remove:
+        for m in models_to_remove:
+            del data[m]
+        logger.warning(
+            "Removed %d model(s) with no embeddable responses: %s",
+            len(models_to_remove), models_to_remove,
+        )
 
 
 def _validate_model_data(model_data: Dict, model_name: str) -> None:
