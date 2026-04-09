@@ -85,7 +85,7 @@ def _raise_for_status(response: requests.Response) -> None:
     try:
         body = response.json()
         if isinstance(body, dict):
-            message = body.get("error", body.get("message", message))
+            message = str(body.get("error", body.get("message", message)))
     except Exception:
         if response.text:
             message = response.text[:200]

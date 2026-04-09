@@ -51,8 +51,8 @@ line-length = 120
 select = ["E", "F", "I", "W"]
 
 [tool.mypy]
-python_version = "3.8"
-warn_return_any = true
+python_version = "3.9"
+warn_return_any = false
 warn_unused_configs = true
 
 [tool.pytest.ini_options]

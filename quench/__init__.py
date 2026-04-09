@@ -36,10 +36,10 @@ from .quench import (
 __version__ = "0.2.0"
 
 # Module-level configuration — set these before calling Benchmark.load()
-api_key = None  # type: Optional[str]
+api_key = None
 """Your Quench API key. Falls back to the ``QUENCH_API_KEY`` environment variable."""
 
-base_url = None  # type: Optional[str]
+base_url = None
 """Override the default API base URL."""
 
 # quench.Benchmark.load(...) / .create(...) / .list(...)
