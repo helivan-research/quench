@@ -11,20 +11,18 @@ Covers:
 - Error handling
 """
 
-import pytest
-from unittest.mock import MagicMock
 
-from quench import QuenchClient, AuthenticationError, BenchmarkNotFoundError
+import pytest
+
+from quench import AuthenticationError, BenchmarkNotFoundError, QuenchClient
 from quench.quench import (
     Benchmark,
-    NotFoundError,
-    RateLimitError,
     QuenchAPIError,
-    _validate_response_data,
+    RateLimitError,
     _validate_model_data,
+    _validate_response_data,
 )
 from tests.conftest import _make_response
-
 
 # ---------------------------------------------------------------------------
 # Authentication
@@ -128,8 +126,12 @@ class TestBenchmarkCreate:
         # With threshold=0, all creates go through R2 (1 presign per model + create)
         mock_session.post.side_effect = [
             _make_response({"token": "jwt_abc", "user_id": "u1"}),  # login
-            _make_response({"upload_url": "https://r2/upload", "storage_key": "uploads/gpt4.json", "expires_in": 3600}),  # presign for gpt4
-            _make_response({"benchmark_id": "bench_123", "status": "processing", "metadata": {}}),  # create
+            _make_response({
+                "upload_url": "https://r2/upload", "storage_key": "uploads/gpt4.json", "expires_in": 3600,
+            }),  # presign for gpt4
+            _make_response({
+                "benchmark_id": "bench_123", "status": "processing", "metadata": {},
+            }),  # create
         ]
         mock_session.put.return_value = _make_response(None, text="")
         client = QuenchClient(api_key="qk_test")
@@ -446,7 +448,7 @@ class TestResponseUnwrapping:
         mock_session.get.return_value = _make_response({
             "categories": ["math", "coding", "safety"],
         })
-        from quench.quench import benchmark_categories, _reset_default_client
+        from quench.quench import _reset_default_client, benchmark_categories
         _reset_default_client()
         # Use explicit client
         client = QuenchClient()
@@ -460,7 +462,7 @@ class TestResponseUnwrapping:
             "default_provider": "google",
             "default_model": "gemini-embedding-001",
         })
-        from quench.quench import embedding_providers, _reset_default_client
+        from quench.quench import _reset_default_client, embedding_providers
         _reset_default_client()
         client = QuenchClient()
         result = embedding_providers(client=client)
@@ -522,7 +524,9 @@ class TestPresignedUpload:
         """All benchmarks use per-model R2 upload (threshold=0)."""
         mock_session.post.side_effect = [
             _make_response({"token": "jwt", "user_id": "u1"}),
-            _make_response({"upload_url": "https://r2/upload", "storage_key": "uploads/gpt4.json", "expires_in": 3600}),
+            _make_response({
+                "upload_url": "https://r2/upload", "storage_key": "uploads/gpt4.json", "expires_in": 3600,
+            }),
             _make_response({"benchmark_id": "b1", "status": "processing"}),
         ]
         mock_session.put.return_value = _make_response(None, text="")
@@ -551,14 +555,17 @@ class TestPresignedUpload:
             mock_session.post.side_effect = [
                 _make_response({"token": "jwt", "user_id": "u1"}),  # login
                 # One presign per model (1 model in this data)
-                _make_response({"upload_url": "https://r2.example.com/upload", "storage_key": "uploads/m1.json", "expires_in": 3600}),
-                _make_response({"benchmark_id": "b1", "status": "processing"}),  # create
+                _make_response({
+                    "upload_url": "https://r2.example.com/upload",
+                    "storage_key": "uploads/m1.json", "expires_in": 3600,
+                }),
+                _make_response({"benchmark_id": "b1", "status": "processing"}),
             ]
             mock_session.put.return_value = _make_response(None, text="")
 
             data = {"m1": {"sub": {"q1": {"question": "x", "response": ["y"]}}}}
             client = QuenchClient(api_key="qk_test")
-            bm = client.benchmarks.create("large", data)
+            client.benchmarks.create("large", data)
 
             # Should have: login, 1 presign, create = 3 posts + 1 put
             assert mock_session.post.call_count == 3

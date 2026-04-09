@@ -2,8 +2,9 @@
 Pytest fixtures for Quench SDK tests.
 """
 
-import pytest
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 
 @pytest.fixture

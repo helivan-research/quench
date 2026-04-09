@@ -19,20 +19,18 @@ Advanced (thread-safe) usage::
 """
 
 from .quench import (
-    # Client
-    QuenchClient,
-    # Benchmark
-    Benchmark as _Benchmark,
-    _DefaultBenchmarkAccessor,
-    # Exceptions
-    QuenchAPIError,
     AuthenticationError,
-    NotFoundError,
-    RateLimitError,
     BenchmarkNotFoundError,
-    # Module-level helpers
-    embedding_providers,
+    NotFoundError,
+    QuenchAPIError,
+    QuenchClient,
+    RateLimitError,
+    _DefaultBenchmarkAccessor,
     benchmark_categories,
+    embedding_providers,
+)
+from .quench import (
+    Benchmark as _Benchmark,  # noqa: F401 — used via _DefaultBenchmarkAccessor
 )
 
 __version__ = "0.2.0"

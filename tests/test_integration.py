@@ -15,7 +15,7 @@ from typing import Dict
 
 import pytest
 
-from quench import QuenchClient, BenchmarkNotFoundError
+from quench import BenchmarkNotFoundError, QuenchClient
 
 BASE_URL = "http://localhost:5001"
 

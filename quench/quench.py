@@ -173,19 +173,25 @@ class QuenchClient:
                 pass
         return {}
 
-    def _get(self, path: str, *, params: Optional[Dict] = None, auth: bool = False, timeout: int = DEFAULT_TIMEOUT) -> Any:
+    def _get(
+        self, path: str, *, params: Optional[Dict] = None, auth: bool = False, timeout: int = DEFAULT_TIMEOUT,
+    ) -> Any:
         headers = self._auth_headers() if auth else self._optional_auth_headers()
         resp = self._session.get(f"{self.base_url}{path}", headers=headers, params=params, timeout=timeout)
         _raise_for_status(resp)
         return resp.json()
 
-    def _post(self, path: str, *, json: Optional[Dict] = None, auth: bool = False, timeout: int = DEFAULT_TIMEOUT) -> Any:
+    def _post(
+        self, path: str, *, json: Optional[Dict] = None, auth: bool = False, timeout: int = DEFAULT_TIMEOUT,
+    ) -> Any:
         headers = self._auth_headers() if auth else self._optional_auth_headers()
         resp = self._session.post(f"{self.base_url}{path}", headers=headers, json=json, timeout=timeout)
         _raise_for_status(resp)
         return resp.json()
 
-    def _patch(self, path: str, *, json: Optional[Dict] = None, auth: bool = True, timeout: int = DEFAULT_TIMEOUT) -> Any:
+    def _patch(
+        self, path: str, *, json: Optional[Dict] = None, auth: bool = True, timeout: int = DEFAULT_TIMEOUT,
+    ) -> Any:
         headers = self._auth_headers() if auth else self._optional_auth_headers()
         resp = self._session.patch(f"{self.base_url}{path}", headers=headers, json=json, timeout=timeout)
         _raise_for_status(resp)
@@ -200,7 +206,9 @@ class QuenchClient:
             return resp.json()
         return None
 
-    def _put_raw(self, url: str, data: bytes, content_type: str = "application/json", timeout: int = LONG_TIMEOUT) -> None:
+    def _put_raw(
+        self, url: str, data: bytes, content_type: str = "application/json", timeout: int = LONG_TIMEOUT,
+    ) -> None:
         """PUT raw bytes to an arbitrary URL (e.g. presigned R2 URL)."""
         resp = self._session.put(url, data=data, headers={"Content-Type": content_type}, timeout=timeout)
         _raise_for_status(resp)
@@ -307,7 +315,9 @@ class _BenchmarkNamespace:
                 upload_url = presign_resp["upload_url"]
                 model_key = presign_resp["storage_key"]
                 upload_timeout = max(LONG_TIMEOUT, len(model_json) // (1024 * 1024) * 2)
-                self._client._put_raw(upload_url, model_json.encode(), content_type="application/json", timeout=upload_timeout)
+                self._client._put_raw(
+                    upload_url, model_json.encode(), content_type="application/json", timeout=upload_timeout,
+                )
                 model_keys[model_name] = model_key
                 if (i + 1) % 10 == 0 or i == len(models) - 1:
                     logger.info("Uploaded %d/%d models to R2", i + 1, len(models))
