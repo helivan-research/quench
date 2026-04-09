@@ -36,9 +36,9 @@ JAILBREAK_PATH = os.path.normpath(
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..",
                  "projects", "jailbreak-dkps", "data", "model_results.json")
 )
-# Fallback to absolute path
+# Fallback to environment variable
 if not os.path.exists(JAILBREAK_PATH):
-    JAILBREAK_PATH = "/home/ubuntu/helivan-chat-a100/projects/jailbreak-dkps/data/model_results.json"
+    JAILBREAK_PATH = os.environ.get("JAILBREAK_DATA_PATH", "data/model_results.json")
 
 BENCHMARK_NAME = f"e2e_test_{int(time.time())}"
 TRAIN_MODELS = 5
@@ -46,9 +46,9 @@ HOLDOUT_INDEX = 5
 SUBTASKS = ["non_harmful", "violence_and_harm"]
 QUERIES_PER_SUBTASK = 50
 
-# Test user credentials (created in DB during testing session)
-TEST_EMAIL = "sdk_e2e_test99@example.com"
-TEST_PASSWORD = "TestPass123!"
+# Test user credentials (set via environment or defaults for local testing)
+TEST_EMAIL = os.environ.get("QUENCH_TEST_EMAIL", "sdk_e2e_test@example.com")
+TEST_PASSWORD = os.environ.get("QUENCH_TEST_PASSWORD", "TestPass_E2E_123!")
 
 
 def subsample(data, model_names, subtasks, max_queries):
