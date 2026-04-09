@@ -216,13 +216,17 @@ class _BenchmarkNamespace:
     def __init__(self, client: QuenchClient) -> None:
         self._client = client
 
-    def load(self, benchmark_name: str) -> "Benchmark":
+    def load(self, benchmark_name: str, load_cache: bool = False) -> "Benchmark":
         """Load a benchmark by name.
 
         Public benchmarks can be loaded without authentication.
 
         Args:
             benchmark_name: Name of the benchmark.
+            load_cache: If True, pre-fetches optimal queries and stages
+                them on the server. Subsequent :meth:`~Benchmark.predict`
+                and :meth:`~Benchmark.get_optimal_queries` calls will be
+                faster (no extra API round-trips).
 
         Returns:
             A :class:`Benchmark` instance.
@@ -236,7 +240,7 @@ class _BenchmarkNamespace:
         except NotFoundError:
             raise BenchmarkNotFoundError(f"Benchmark '{benchmark_name}' not found")
 
-        return Benchmark._from_api(self._client, benchmark_name, data)
+        return Benchmark._from_api(self._client, benchmark_name, data, load_cache=load_cache)
 
     # Always use per-model R2 upload when R2 is configured.
     # Set to 0 to force R2 for all benchmarks.
@@ -400,9 +404,11 @@ class Benchmark:
         self._benchmark_id: Optional[str] = None
         self._queries: Optional[Dict] = None
         self._model_scores: Optional[Dict] = None
+        self._cached_optimal: Optional[Dict] = None
+        self._cached_session: Optional[Dict] = None
 
     @classmethod
-    def _from_api(cls, client: QuenchClient, name: str, api_data: Dict) -> "Benchmark":
+    def _from_api(cls, client: QuenchClient, name: str, api_data: Dict, load_cache: bool = False) -> "Benchmark":
         bm = cls(client, name)
         bm._data = api_data.get("benchmark_data", {})
         bm._metadata = api_data.get("metadata", {})
@@ -412,7 +418,25 @@ class Benchmark:
         bm._model_scores = api_data.get("model_scores")
         num_models = len(bm.models)
         logger.info("Loaded benchmark '%s' with %d model(s)", name, num_models)
+
+        if load_cache and bm._status == "ready":
+            bm._load_cache()
+
         return bm
+
+    def _load_cache(self) -> None:
+        """Fetch and cache optimal queries locally for fast access."""
+        try:
+            self._cached_optimal = self._client._get(
+                f"/benchmarks/{self.name}/optimal-queries",
+                params={"budget": 50},
+                timeout=LONG_TIMEOUT,
+            )
+            logger.info("Cache loaded: %d optimal queries cached locally",
+                        len(self._cached_optimal.get("queries", [])))
+        except Exception as e:
+            logger.warning("Failed to load cache: %s", e)
+            self._cached_optimal = None
 
     # -- properties ---------------------------------------------------------
 
@@ -731,7 +755,9 @@ class Benchmark:
 
             session: Optional staged session dict (from :meth:`stage`).
                 When provided, prediction uses preloaded embeddings
-                and completes in ~2s instead of ~90s.
+                and completes in ~2s instead of ~90s. If omitted and
+                ``load_cache=True`` was used, the cached session is
+                used automatically.
 
         Returns:
             Dict with ``predicted_scores``, ``confidence_interval``,
@@ -769,6 +795,9 @@ class Benchmark:
     def get_optimal_queries(self, budget: int = 10) -> Dict:
         """Get the most informative queries for a given budget.
 
+        If ``load_cache=True`` was used and ``budget`` fits within the
+        cached set, returns a subset without an API call.
+
         Args:
             budget: Number of queries to select (default 10, max 100).
 
@@ -778,6 +807,15 @@ class Benchmark:
         """
         if self.name is None:
             raise ValueError("No benchmark loaded.")
+
+        # Return from cache if we have enough queries cached
+        if self._cached_optimal is not None:
+            cached_queries = self._cached_optimal.get("queries", [])
+            if budget <= len(cached_queries):
+                return {
+                    **self._cached_optimal,
+                    "queries": cached_queries[:budget],
+                }
 
         result = self._client._get(
             f"/benchmarks/{self.name}/optimal-queries",
@@ -942,10 +980,10 @@ class _DefaultBenchmarkAccessor:
     explicitly creating a :class:`QuenchClient`.
     """
 
-    def load(self, benchmark_name: str) -> Benchmark:
+    def load(self, benchmark_name: str, load_cache: bool = False) -> Benchmark:
         """Load a benchmark using the default client."""
         _reset_default_client()
-        return _get_default_client().benchmarks.load(benchmark_name)
+        return _get_default_client().benchmarks.load(benchmark_name, load_cache=load_cache)
 
     def create(self, benchmark_name: str, data: Dict, **kwargs: Any) -> Benchmark:
         """Create a benchmark using the default client."""
