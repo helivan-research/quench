@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "quench"
+name = "qe-bench"
 dynamic = ["version"]
 description = "Predict benchmark scores from a fraction of the queries"
 readme = "README.md"
@@ -39,6 +39,9 @@ Homepage = "https://quench.helivan.io"
 Documentation = "https://quench.helivan.io/docs"
 Repository = "https://github.com/helivan-research/quench"
 Changelog = "https://github.com/helivan-research/quench/blob/main/CHANGELOG.md"
+
+[tool.hatch.build.targets.wheel]
+packages = ["quench"]
 
 [tool.hatch.version]
 path = "quench/__init__.py"
