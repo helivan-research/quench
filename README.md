@@ -22,7 +22,7 @@ If you want to compare how two configurations perform on a benchmark, each confi
 ## Installation
 
 ```bash
-pip install quench
+pip install qe-bench
 ```
 
 ## Quickstart
