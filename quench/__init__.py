@@ -33,7 +33,7 @@ from .quench import (
     Benchmark as _Benchmark,  # noqa: F401 — used via _DefaultBenchmarkAccessor
 )
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 
 # Module-level configuration — set these before calling Benchmark.load()
 api_key = None
